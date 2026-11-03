@@ -1,6 +1,9 @@
 """Producer trust controls must refuse unsafe sources before publishing."""
+import hashlib
 import importlib.util
+import io
 import stat
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,13 +85,45 @@ class SecurityTests(unittest.TestCase):
         metadata = {"Id": "sha256:" + "b" * 64, "Descriptor": {
             "digest": "sha256:" + "b" * 64,
             "annotations": {"config.digest": "sha256:" + "c" * 64}}}
-        with patch.object(producer, "run", return_value=producer.json.dumps(metadata)):
+        with patch.object(producer, "run", return_value=producer.json.dumps(metadata)), patch.object(producer, "saved_config_digest", return_value="sha256:"+"c"*64, create=True) as saved:
             self.assertEqual(producer.local_config_digest("candidate"), "sha256:" + "c" * 64)
+        saved.assert_called_once_with("candidate")
 
     def test_descriptor_without_config_identity_is_refused(self):
         metadata = {"Id": "sha256:" + "b" * 64, "Descriptor": {"digest": "sha256:" + "b" * 64}}
         with patch.object(producer, "run", return_value=producer.json.dumps(metadata)), self.assertRaises(ValueError):
             producer.local_config_digest("candidate")
+
+    def test_modern_index_without_annotations_uses_saved_platform_config(self):
+        self.check_saved_config("amd64")
+
+    def test_saved_configuration_refuses_the_wrong_platform(self):
+        with self.assertRaisesRegex(ValueError,"linux/amd64"):
+            self.check_saved_config("arm64")
+
+    def check_saved_config(self, architecture):
+        config = producer.json.dumps({"architecture":architecture,"os":"linux"}).encode()
+        metadata = {"Id":"sha256:"+"b"*64,"Descriptor":{
+            "digest":"sha256:"+"b"*64,"mediaType":"application/vnd.oci.image.index.v1+json"}}
+
+        def execute(*args, **_kwargs):
+            if args[:3] == ("docker","image","inspect"):
+                return producer.json.dumps(metadata)
+            if args[:3] == ("docker","image","save"):
+                path = Path(args[args.index("--output")+1])
+                manifest = producer.json.dumps([{"Config":"config.json","Layers":[]}]).encode()
+                with tarfile.open(path,"w") as archive:
+                    for name, payload in (("manifest.json",manifest),("config.json",config)):
+                        member = tarfile.TarInfo(name)
+                        member.size = len(payload)
+                        archive.addfile(member,io.BytesIO(payload))
+            return ""
+
+        with patch.object(producer,"run",side_effect=execute) as run:
+            self.assertEqual(producer.local_config_digest("candidate"),"sha256:"+hashlib.sha256(config).hexdigest())
+        calls = [call.args for call in run.call_args_list if call.args[:3] == ("docker","image","save")]
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][3:5],("--platform","linux/amd64"))
 
     def test_authoritative_push_digest_does_not_use_local_repo_digests(self):
         digest = "sha256:" + "a" * 64

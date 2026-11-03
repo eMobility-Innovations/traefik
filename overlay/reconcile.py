@@ -119,12 +119,11 @@ def require_unused_tag(tag):
 
 
 def local_config_digest(tag):
-    metadata = json.loads(run("docker", "image", "inspect", "--format", "{{json .}}", tag))
-    descriptor = metadata.get("Descriptor")
-    # Containerd-backed Docker uses the manifest ID as .Id; classic storage uses
-    # the config ID. Never compare the former with a registry config descriptor.
-    digest = (descriptor.get("annotations", {}).get("config.digest")
-              if descriptor is not None else metadata.get("Id"))
+    metadata = json.loads(run("docker", "image", "inspect", "--platform", "linux/amd64", "--format", "{{json .}}", tag))
+    # Modern Docker IDs identify manifests or indexes, never raw configuration.
+    if metadata.get("Descriptor") is not None:
+        return saved_config_digest(tag)
+    digest = metadata.get("Id")
     if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
         raise ValueError("Docker did not expose an authoritative local configuration digest")
     return digest
@@ -146,20 +145,43 @@ def sha256(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def archive_configuration(archive):
+    manifest = json.load(archive.extractfile("manifest.json"))
+    if not isinstance(manifest, list) or len(manifest) != 1:
+        raise ValueError("selected platform archive must contain exactly one image")
+    entry = manifest[0]
+    member = archive.getmember(entry["Config"])
+    if not member.isreg():
+        raise ValueError("saved image configuration must be a regular file")
+    config = archive.extractfile(member).read()
+    metadata = json.loads(config)
+    if not isinstance(metadata, dict) or metadata.get("architecture") != "amd64" or metadata.get("os") != "linux":
+        raise ValueError("saved image platform must be linux/amd64")
+    return entry, config, metadata
+
+
+def saved_config_digest(tag):
+    try:
+        with tempfile.TemporaryDirectory(prefix="traefik-config-identity-") as temporary:
+            path = Path(temporary) / "image.tar"
+            run("docker", "image", "save", "--platform", "linux/amd64", "--output", str(path), tag)
+            with tarfile.open(path, "r:*") as archive:
+                _, config, _ = archive_configuration(archive)
+            return sha256(config)
+    except (OSError, tarfile.TarError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("cannot verify the selected local configuration bytes") from error
+
+
 def verify_artifact_archive(path, image_id, payload):
     with tarfile.open(path, "r:*") as archive:
-        manifest = json.load(archive.extractfile("manifest.json"))
-        if len(manifest) != 1 or len(manifest[0]["Layers"]) != 1:
+        entry, config, metadata = archive_configuration(archive)
+        if len(entry["Layers"]) != 1:
             raise ValueError("promotion artifact must have one image and one layer")
-        config = archive.extractfile(manifest[0]["Config"]).read()
         if sha256(config) != image_id:
             raise ValueError("promotion artifact configuration digest differs from image")
-        layer = archive.extractfile(manifest[0]["Layers"][0]).read()
+        layer = archive.extractfile(entry["Layers"][0]).read()
     if layer.startswith(b"\x1f\x8b"):
         layer = gzip.decompress(layer)
-    metadata = json.loads(config)
-    if metadata.get("architecture") != "amd64" or metadata.get("os") != "linux":
-        raise ValueError("promotion artifact platform must be linux/amd64")
     if metadata.get("rootfs", {}).get("diff_ids") != [sha256(layer)]:
         raise ValueError("promotion artifact layer digest differs from configuration")
     with tarfile.open(fileobj=io.BytesIO(layer), mode="r:") as archive:
