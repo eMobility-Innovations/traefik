@@ -49,3 +49,20 @@ automation committer identity. Candidate tags include the full input fingerprint
 existing tag is refused. The digest returned by the push is read back from the registry;
 its configuration digest must equal the current candidate image ID before promotion.
 Local historical `RepoDigests` never select the promoted artifact.
+
+Successful promotion JSON is published as a **data-only scratch OCI image** in the
+same repository at `registry.fiszu.com/emobility/traefik:promotion-linux-amd64`.
+This tag is discovery only; consumers resolve its immutable digest, verify its
+config and layer hashes, then read its sole regular `promotion.json` member without
+running the image. The producer first proves the local Docker archive has exactly
+one such layer and its bytes match the verified candidate manifest. Only after the
+candidate image and promotion artifact pushes have been read back successfully do
+the local last-good manifest and input marker advance. No new service, credential,
+or schedule is introduced. `verify_promotion_artifact.py` exercises the real Docker
+archive locally and removes its fixture image; it never pushes a fixture.
+
+Docker storage engines expose different image identities: containerd-backed Docker
+uses the manifest digest in `.Id`, with the configuration digest in
+`.Descriptor.annotations["config.digest"]`; classic storage uses the config ID.
+The producer binds registry configuration digests to that explicit local config
+identity and refuses an unsupported descriptor without that annotation.
