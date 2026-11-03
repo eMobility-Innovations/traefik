@@ -3,7 +3,19 @@
 set -euo pipefail
 umask 077
 repo=$(cd "$(dirname "$0")/.." && pwd)
-cd "$repo"
+if (( $# > 1 )); then
+    echo 'Usage: validate.sh [candidate-root]' >&2
+    exit 2
+fi
+candidate=$repo
+if (( $# == 1 )); then
+    candidate=$1
+fi
+if [[ ! -d $candidate ]]; then
+    echo 'Candidate root must be an existing directory.' >&2
+    exit 2
+fi
+candidate=$(cd -- "$candidate" && pwd -P)
 command -v go >/dev/null
 command -v shellcheck >/dev/null
 pins="$repo/.github/workflows/validate.yaml"
@@ -21,8 +33,9 @@ lint_bin="$validation_dir/golangci-lint-$lint_version/bin"
 spell_bin="$validation_dir/misspell-$spell_version/bin"
 mkdir -p "$lint_bin" "$spell_bin"
 # Module checksums remain mandatory even when a caller has private-module settings.
-GOBIN="$lint_bin" GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
+GOBIN="$lint_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
     go install -p 4 "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$lint_version"
-GOBIN="$spell_bin" GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
+GOBIN="$spell_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
     go install -p 4 "github.com/golangci/misspell/cmd/misspell@$spell_version"
+cd "$candidate"
 PATH="$lint_bin:$spell_bin:$PATH" make validate

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export REAL_GO REAL_MAKE
+REAL_GO=$(command -v go)
+REAL_MAKE=$(command -v make)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -r -- "$work"' EXIT
@@ -14,6 +17,8 @@ cat > "$work/bin/go" <<'GO'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $GOSUMDB == sum.golang.org && -z ${GONOSUMDB:-} && -z ${GOPRIVATE:-} && $GOTOOLCHAIN == local ]]
+effective=$("$REAL_GO" env GONOSUMDB GOPRIVATE)
+[[ -z $effective ]]
 [[ $1 == install && $2 == -p && $3 == 4 ]]
 case $4 in
  github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0) tool=golangci-lint ;;
@@ -30,18 +35,54 @@ cat > "$work/bin/make" <<'MAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $* == validate ]]
+[[ $GOENV == $HOSTILE_GOENV ]]
+[[ $PWD == $EXPECTED_REPO ]]
+
 [[ $(command -v golangci-lint) == "$TMPDIR"/traefik-validate.*/golangci-lint-v2.14.0/bin/golangci-lint ]]
 [[ $(command -v misspell) == "$TMPDIR"/traefik-validate.*/misspell-v0.7.0/bin/misspell ]]
-printf 'make validate\n' >> "$AUDIT"
-exit "${MAKE_EXIT:-0}"
+if [[ ${MAKE_EXIT:-0} != 0 ]]; then
+    exit "$MAKE_EXIT"
+fi
+"$REAL_MAKE" "$@"
 MAKE
 printf '#!/bin/sh\nexit 0\n' > "$work/bin/shellcheck"
 chmod 700 "$work/bin/"*
+cat > "$work/repo/Makefile" <<'MAKEFILE'
+validate:
+	@test "$$EXPECTED_MAKEFILE" = protected
+	@printf 'make validate\n' >> "$$AUDIT"
+MAKEFILE
+export EXPECTED_REPO="$work/repo" EXPECTED_MAKEFILE=protected
 export AUDIT="$work/audit" TMPDIR="$work/tmp"
+export HOSTILE_GOENV="$work/hostile-go.env"
+printf 'GOSUMDB=off\nGONOSUMDB=*\nGOPRIVATE=*\n' > "$HOSTILE_GOENV"
+export GOENV="$HOSTILE_GOENV"
 export GOSUMDB=off GOPRIVATE='*' GONOSUMDB='*'
 PATH="$work/bin:$PATH" bash "$work/repo/overlay/validate.sh"
 [[ $(wc -l < "$AUDIT") == 3 ]]
 [[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
+mkdir -p "$work/candidate/.github/workflows"
+cat > "$work/candidate/Makefile" <<'MAKEFILE'
+validate:
+	@test "$$EXPECTED_MAKEFILE" = candidate
+	@printf 'make validate\n' >> "$$AUDIT"
+MAKEFILE
+printf 'env:\n  GOLANGCI_LINT_VERSION: v99.0.0\n  MISSPELL_VERSION: v99.0.0\n' > "$work/candidate/.github/workflows/validate.yaml"
+PATH="$work/bin:$PATH" EXPECTED_REPO="$work/candidate" EXPECTED_MAKEFILE=candidate \
+    bash "$work/repo/overlay/validate.sh" "$work/candidate"
+before=$(wc -l < "$AUDIT")
+for args in missing extra; do
+    if [[ $args == missing ]]; then
+        set -- "$work/not-a-directory"
+    else
+        set -- "$work/candidate" "$work/candidate"
+    fi
+    if PATH="$work/bin:$PATH" bash "$work/repo/overlay/validate.sh" "$@"; then
+        echo 'invalid candidate arguments accepted' >&2; exit 1
+    fi
+    [[ $(wc -l < "$AUDIT") == "$before" ]]
+done
+
 if PATH="$work/bin:$PATH" MAKE_EXIT=37 bash "$work/repo/overlay/validate.sh"; then
  echo 'make failure was swallowed' >&2;exit 1
 else
