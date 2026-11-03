@@ -25,12 +25,69 @@ class ProducerTests(unittest.TestCase):
             with patch.object(producer, "validate_root_path"), patch.object(producer.os, "access", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(producer, "run", side_effect=failure), self.assertRaises(subprocess.CalledProcessError):
                 producer.run_gate(Path("/candidate"), state, "a" * 40)
             receipt = json.loads((state / "gate-failure.json").read_text())
+            self.assertEqual((state / "gate-failure.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual(receipt["phase"], "gate")
             self.assertEqual(receipt["tool"], "traefik-readiness-gate")
             self.assertEqual(receipt["source_commit"], "a" * 40)
             self.assertIn("missing shellcheck", receipt["stdout"])
             self.assertNotIn(secret, json.dumps(receipt))
             self.assertNotIn('do-not-leak', json.dumps(receipt))
+
+    def test_gate_output_preserves_beginning_and_terminal_cause(self):
+        output = "starting gate\n" + "downloading dependency\n" * 400 + "linter cache: permission denied"
+        result = producer._redact_gate_output(output)
+        self.assertTrue(result.startswith("starting gate\n"))
+        self.assertTrue(result.endswith("linter cache: permission denied"))
+        self.assertIn("[... truncated ...]", result)
+        self.assertLessEqual(len(result), 4096)
+
+    def test_gate_output_length_boundaries(self):
+        for size in (0, 1, 4095, 4096, 4097, 10000):
+            with self.subTest(size=size):
+                output = "é" * size
+                result = producer._redact_gate_output(output)
+                self.assertLessEqual(len(result), 4096)
+                if size <= 4096:
+                    self.assertEqual(result, output)
+                else:
+                    self.assertIn("[... truncated ...]", result)
+                    self.assertTrue(result.startswith("é"))
+                    self.assertTrue(result.endswith("é"))
+        self.assertEqual(producer._redact_gate_output(None), "")
+
+    def test_gate_output_redacts_whole_sensitive_lines_before_trimming(self):
+        for padding in (0, 2000, 4095, 4096, 4097, 8000):
+            with self.subTest(padding=padding):
+                output = ("public start\n" + "x" * padding + "\n"
+                          + "Authorization: Bearer " + "s" * 10000 + "tail-secret\n"
+                          + "y" * 8000 + "\nterminal cause")
+                result = producer._redact_gate_output(output)
+                self.assertNotIn("Bearer", result)
+                self.assertNotIn("tail-secret", result)
+                self.assertNotIn("s" * 20, result)
+                self.assertTrue(result.endswith("terminal cause"))
+                self.assertLessEqual(len(result), 4096)
+
+    def test_gate_output_never_exposes_sensitive_line_tail_fragments(self):
+        for header in ("Authorization: Bearer ", "token=", "password: "):
+            for padding in (0, 2038, 4096):
+                with self.subTest(header=header, padding=padding):
+                    output = ("public start\n" + "chatter\n" * 1000
+                              + "x" * padding + "\n" + header
+                              + "s" * 10000 + "tail-secret\nterminal cause")
+                    result = producer._redact_gate_output(output)
+                    self.assertNotIn("Bearer", result)
+                    self.assertNotIn("tail-secret", result)
+                    self.assertNotIn("s" * 20, result)
+                    self.assertTrue(result.endswith("terminal cause"))
+                    self.assertLessEqual(len(result), 4096)
+
+    def test_gate_output_redacts_url_credentials_in_retained_tail(self):
+        output = "starting\n" + "chatter\n" * 1000 + "failed https://user:secret@example.com/cache"
+        result = producer._redact_gate_output(output)
+        self.assertTrue(result.endswith("failed https://<redacted>@example.com/cache"))
+        self.assertNotIn("user:secret", result)
+        self.assertEqual(producer._redact_gate_output("short diagnostic\n"), "short diagnostic\n")
 
     def test_newest_stable_excludes_preview_and_peeled_tags(self):
         rows = "a refs/tags/v3.7.9\nb refs/tags/v3.7.17\nc refs/tags/v3.8.0-rc1\nd refs/tags/v3.7.17^{}"
