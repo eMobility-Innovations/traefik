@@ -24,9 +24,28 @@ The fixed installed invocation is `/usr/local/sbin/traefik-readiness-reconcile`,
 wrapper for this script with its default root-owned configuration and state paths.
 `/etc/traefik-readiness/producer.json` must contain exactly `source_checkout`,
 `patch_commits` (full reviewed Go commits), `overlay_commit` (full reviewed organization overlay commit), `build_image`, `runtime_image`, `webui_image`
-(all immutable references), and `gate_command` (absolute installed executable). The gate
-receives the candidate worktree as its only argument and must run `make validate` and
-`./verify.sh`; an unavailable gate fails the build. Registry authentication comes from
+(all references must exactly equal the trusted installed `build-inputs.lock`). The fixed root-owned `/usr/local/libexec/traefik-readiness-gate` receives the candidate worktree as its only argument and runs exactly `make validate` followed by `./verify.sh`; no configurable gate or skip exists. Install its source from `overlay/traefik-readiness-gate`. An unavailable or unsafe gate fails the build. Registry authentication comes from
 the dedicated builder Docker configuration, never this JSON or git. The control-plane
 consumer reads `/var/lib/traefik-readiness/promotion-manifest.json` through its authenticated
 fleet transport and owns staged deployment; the producer never changes an edge.
+
+The producer runs against a controlled **bare** source mirror, never an arbitrary
+checkout. Every source/configuration path and parent must belong to root, be free of
+symlinks, and deny group/other writes. The mirror has exactly this local configuration:
+
+```ini
+[core]
+    repositoryformatversion = 0
+    filemode = true
+    bare = true
+[remote "origin"]
+    url = https://github.com/eMobility-Innovations/traefik.git
+    fetch = +refs/heads/main:refs/remotes/origin/main
+```
+
+Global/system Git configuration, inherited Git environment overrides, hooks, filesystem
+monitoring, replacement objects and grafts are disabled. The producer supplies an explicit
+automation committer identity. Candidate tags include the full input fingerprint and an
+existing tag is refused. The digest returned by the push is read back from the registry;
+its configuration digest must equal the current candidate image ID before promotion.
+Local historical `RepoDigests` never select the promoted artifact.

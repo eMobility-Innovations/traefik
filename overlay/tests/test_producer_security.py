@@ -1,0 +1,88 @@
+"""Producer trust controls must refuse unsafe sources before publishing."""
+import importlib.util
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location("producer", Path(__file__).parents[1] / "reconcile.py")
+producer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(producer)
+
+
+class SecurityTests(unittest.TestCase):
+    def test_configurable_success_gate_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(producer, "validate_root_path"):
+            config = Path(temporary) / "config.json"
+            config.write_text('{"gate_command":"/bin/true"}')
+            with self.assertRaises(ValueError):
+                producer.inputs(config)
+        self.assertEqual(producer.GATE_COMMAND, Path("/usr/local/libexec/traefik-readiness-gate"))
+
+    def test_gate_is_checked_before_execution(self):
+        with patch.object(producer, "validate_root_path", side_effect=ValueError("unsafe gate")), patch.object(producer, "run") as run, self.assertRaisesRegex(ValueError, "unsafe gate"):
+            producer.run_gate(Path("/candidate"))
+        run.assert_not_called()
+
+    def test_local_hook_or_filter_configuration_is_refused(self):
+        for extra in ('[include]\npath=/tmp/evil\n', '[filter "evil"]\nsmudge=/tmp/evil\n', '[core]\nhooksPath=/tmp/evil\n'):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                producer.validate_mirror_config(extra)
+
+    def test_hermetic_git_drops_environment_configuration(self):
+        with patch.dict(producer.os.environ, {"GIT_CONFIG_COUNT":"1", "GIT_CONFIG_KEY_0":"core.hooksPath", "GIT_CONFIG_VALUE_0":"/evil", "GIT_EXEC_PATH":"/evil"}), patch.object(producer.subprocess, "run") as command:
+            command.return_value.stdout = ""
+            producer.run("git", "status")
+            args = command.call_args
+        self.assertEqual(args.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(args.kwargs["env"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertEqual(args.kwargs["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(args.kwargs["env"]["GIT_GRAFT_FILE"], "/dev/null")
+        self.assertIn("user.name=Traefik Readiness Automation", args.args[0])
+        self.assertNotIn("GIT_CONFIG_COUNT", args.kwargs["env"])
+        self.assertNotIn("GIT_EXEC_PATH", args.kwargs["env"])
+        self.assertIn("core.hooksPath=/dev/null", args.args[0])
+        self.assertIn("core.fsmonitor=false", args.args[0])
+
+    def test_root_path_rejects_symlink_foreign_owner_and_writable_parent(self):
+        safe = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+        for unsafe in (SimpleNamespace(st_mode=stat.S_IFLNK | 0o755, st_uid=0),
+                       SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=1000),
+                       SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_uid=0)):
+            with self.subTest(unsafe=unsafe), patch.object(Path, "lstat", side_effect=[safe, unsafe]), self.assertRaisesRegex(ValueError, "unsafe root-owned path"):
+                producer.validate_root_path(Path("/safe/source"))
+
+    def test_existing_candidate_tag_is_never_overwritten(self):
+        with patch.object(producer, "run", return_value="existing"), self.assertRaisesRegex(ValueError, "already exists"):
+            producer.require_unused_tag("candidate")
+
+    def test_registry_transport_error_is_not_treated_as_missing(self):
+        error = producer.subprocess.CalledProcessError(1, ["docker"], stderr="connection refused")
+        with patch.object(producer, "run", side_effect=error), self.assertRaises(producer.subprocess.CalledProcessError):
+            producer.require_unused_tag("candidate")
+
+    def test_arbitrary_immutable_build_input_is_refused(self):
+        with patch.object(producer, "trusted_build_inputs", return_value={"build_image":"trusted", "runtime_image":"trusted", "webui_image":"trusted"}), self.assertRaisesRegex(ValueError, "trusted build lock"):
+            producer.validate_build_inputs({"build_image":"evil@sha256:" + "a"*64,
+                                            "runtime_image":"trusted", "webui_image":"trusted"})
+
+    def test_tag_binds_entire_input_fingerprint(self):
+        self.assertNotEqual(producer.candidate_tag("v3.7.17", {"overlay":"a"}),
+                            producer.candidate_tag("v3.7.17", {"overlay":"b"}))
+
+    def test_authoritative_push_digest_does_not_use_local_repo_digests(self):
+        digest = "sha256:" + "a" * 64
+        with patch.object(producer, "run", side_effect=[digest, '{"config":{"digest":"sha256:current"}}', "sha256:current"]) as run:
+            self.assertEqual(producer.publish("candidate"), producer.IMAGE + "@" + digest)
+        self.assertFalse(any(".RepoDigests" in str(call) for call in run.call_args_list))
+
+    def test_registry_manifest_must_match_candidate_config(self):
+        digest = "sha256:" + "a" * 64
+        with patch.object(producer, "run", side_effect=[digest, '{"config":{"digest":"sha256:other"}}', "sha256:current"]), self.assertRaisesRegex(ValueError, "current candidate"):
+            producer.publish("candidate")
+
+
+if __name__ == "__main__":
+    unittest.main()

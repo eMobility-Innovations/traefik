@@ -26,25 +26,24 @@ class ProducerTests(unittest.TestCase):
             manifest = state / "promotion-manifest.json"
             manifest.write_text("last-good")
             config = {"source_checkout": "/source", "overlay_commit": "d" * 40, "patch_commits": ["a" * 40],
-                      "build_image": "build", "runtime_image": "runtime", "webui_image": "webui",
-                      "gate_command": "/gate"}
+                      "build_image": "build", "runtime_image": "runtime", "webui_image": "webui"}
 
             def execute(*args, **_kwargs):
                 if args[:2] == ("git", "ls-remote"):
                     return "b" * 40 + " refs/tags/v3.7.17"
                 if args[:2] == ("git", "rev-parse"):
                     return "c" * 40
-                if args[0] == "/gate":
+                if args[0] == str(producer.GATE_COMMAND):
                     raise RuntimeError("candidate gate failed")
                 return ""
 
-            with patch.object(producer, "inputs", return_value=config), patch.object(producer, "reviewed_source", return_value=Path("/source")), patch.object(producer, "install_overlay"), patch.object(producer, "fetch_release", return_value="b" * 40), patch.object(producer, "run", side_effect=execute), self.assertRaisesRegex(RuntimeError, "candidate gate failed"):
+            with patch.object(producer, "validate_root_path"), patch.object(producer.os, "access", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(producer, "inputs", return_value=config), patch.object(producer, "reviewed_source", return_value=Path("/source")), patch.object(producer, "install_overlay"), patch.object(producer, "fetch_release", return_value="b" * 40), patch.object(producer, "run", side_effect=execute), self.assertRaisesRegex(RuntimeError, "candidate gate failed"):
                 producer.reconcile(state / "config.json", state)
             self.assertEqual(manifest.read_text(), "last-good")
             self.assertFalse((state / "built-inputs.json").exists())
 
     def test_wrong_remote_refuses_source(self):
-        with patch.object(producer, "run", return_value="https://example.com/traefik.git"), self.assertRaisesRegex(ValueError, "canonical org fork"):
+        with patch.object(producer, "validate_mirror"), patch.object(producer, "run", return_value="https://example.com/traefik.git"), self.assertRaisesRegex(ValueError, "canonical org fork"):
             producer.reviewed_source({"source_checkout": "/source", "overlay_commit": "d" * 40,
                                       "patch_commits": ["a" * 40]})
 
@@ -55,7 +54,7 @@ class ProducerTests(unittest.TestCase):
             if args[:2] == ("git", "merge-base"):
                 raise producer.subprocess.CalledProcessError(1, args)
             return ""
-        with patch.object(producer, "run", side_effect=execute), self.assertRaises(producer.subprocess.CalledProcessError):
+        with patch.object(producer, "validate_mirror"), patch.object(producer, "run", side_effect=execute), self.assertRaises(producer.subprocess.CalledProcessError):
             producer.reviewed_source({"source_checkout": "/source", "overlay_commit": "d" * 40,
                                       "patch_commits": ["a" * 40]})
 
@@ -72,7 +71,7 @@ class ProducerTests(unittest.TestCase):
             state = Path(temporary)
             manifest = state / "promotion-manifest.json"
             manifest.write_text("last-good")
-            with patch.object(producer, "inputs", return_value={}), patch.object(producer, "reviewed_source", side_effect=ValueError("untrusted source")), self.assertRaisesRegex(ValueError, "untrusted source"):
+            with patch.object(producer, "validate_root_path"), patch.object(producer, "inputs", return_value={}), patch.object(producer, "reviewed_source", side_effect=ValueError("untrusted source")), self.assertRaisesRegex(ValueError, "untrusted source"):
                 producer.reconcile(state / "config.json", state)
             self.assertEqual(manifest.read_text(), "last-good")
             self.assertFalse((state / "built-inputs.json").exists())
@@ -81,9 +80,9 @@ class ProducerTests(unittest.TestCase):
         value = {"source_checkout": "/src", "overlay_commit": "d" * 40, "patch_commits": ["a" * 40],
                  "build_image": "golang@sha256:" + "b" * 64,
                  "runtime_image": "traefik@sha256:" + "c" * 64,
-                 "webui_image": "node@sha256:" + "d" * 64,
-                 "gate_command": "/usr/local/libexec/traefik-gate"}
-        with tempfile.TemporaryDirectory() as temporary:
+                 "webui_image": "node@sha256:" + "d" * 64}
+        trusted = {key: value[key] for key in ("build_image", "runtime_image", "webui_image")}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(producer, "validate_root_path"), patch.object(producer, "trusted_build_inputs", return_value=trusted):
             path = Path(temporary) / "config.json"
             path.write_text(json.dumps(value))
             self.assertEqual(producer.inputs(path), value)

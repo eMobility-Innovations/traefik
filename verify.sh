@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-python3 -m unittest discover -s overlay/tests -p 'test_reconcile.py'
+python3 -m unittest discover -s overlay/tests -p 'test_*.py'
 bash overlay/tests/test_promotion_manifest.sh
 go test ./pkg/server -run 'Test(ServerStartup|ServerFirstHandshake|InitialConfiguration)' -count=1
 go test ./pkg/tls -run '^TestUpdateConfigs' -count=1
