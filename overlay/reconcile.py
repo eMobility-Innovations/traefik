@@ -157,10 +157,12 @@ def local_config_digest(tag):
 def registry_descriptor_digest(descriptor):
     if not isinstance(descriptor, dict):
         raise ValueError("registry descriptor must describe exactly one image manifest")
+    if type(descriptor.get("size")) is not int or not 0 < descriptor["size"] <= 1024 * 1024:
+        raise ValueError("registry descriptor has an invalid manifest size")
     digest = descriptor.get("digest")
     if not matches(r"sha256:[a-f0-9]{64}", digest):
         raise ValueError("registry descriptor did not expose an authoritative digest")
-    if type(descriptor.get("schemaVersion")) is not int or descriptor.get("schemaVersion") != 2:
+    if "schemaVersion" in descriptor and (type(descriptor["schemaVersion"]) is not int or descriptor["schemaVersion"] != 2):
         raise ValueError("registry descriptor must be a schema v2 image manifest")
     if descriptor.get("mediaType") not in ("application/vnd.docker.distribution.manifest.v2+json",
                                           "application/vnd.oci.image.manifest.v1+json"):
@@ -177,6 +179,10 @@ def publish(tag):
     digest = registry_descriptor_digest(descriptor)
     reference = IMAGE + "@" + digest
     manifest = json.loads(run("docker", "buildx", "imagetools", "inspect", "--raw", reference))
+    if (not isinstance(manifest, dict) or type(manifest.get("schemaVersion")) is not int
+            or manifest["schemaVersion"] != 2 or manifest.get("mediaType") != descriptor["mediaType"]
+            or "manifests" in manifest):
+        raise ValueError("pushed registry manifest does not match the current candidate")
     current = local_config_digest(tag)
     if manifest.get("config", {}).get("digest") != current:
         raise ValueError("pushed registry manifest does not match the current candidate")

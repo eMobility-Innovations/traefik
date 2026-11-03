@@ -142,6 +142,16 @@ class SecurityTests(unittest.TestCase):
             run.assert_any_call("docker", "buildx", "imagetools", "inspect", "--raw", producer.IMAGE + "@" + digest)
             self.assertFalse(any(".RepoDigests" in str(call) for call in run.call_args_list))
 
+    def test_live_single_image_descriptor_without_schema_is_supported(self):
+        digest = "sha256:" + "a" * 64
+        config = "sha256:" + "c" * 64
+        media = "application/vnd.oci.image.manifest.v1+json"
+        descriptor = producer.json.dumps({"digest": digest, "mediaType": media, "size": 1246})
+        readback = producer.json.dumps({"schemaVersion": 2, "mediaType": media, "config": {"digest": config}})
+        with patch.object(producer, "run", side_effect=["Info -> --platform\ncandidate\n", descriptor,
+                                                          readback, producer.json.dumps({"Id": config})]):
+            self.assertEqual(producer.publish("candidate"), producer.IMAGE + "@" + digest)
+
     def test_misleading_push_stdout_digest_is_ignored(self):
         real = "sha256:" + "a" * 64
         fake = "sha256:" + "b" * 64
@@ -149,7 +159,7 @@ class SecurityTests(unittest.TestCase):
         banner = "Info: Using --platform linux/amd64\n" + producer.IMAGE + ":v3.7.17-candidate\n" + fake
         descriptor = producer.json.dumps({"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
                                           "size": 1382, "digest": real, "schemaVersion": 2})
-        readback = producer.json.dumps({"config": {"digest": config}})
+        readback = producer.json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json", "config": {"digest": config}})
         with patch.object(producer, "run", side_effect=[banner, descriptor, readback, producer.json.dumps({"Id": config})]):
             self.assertEqual(producer.publish("candidate"), producer.IMAGE + "@" + real)
 
@@ -174,7 +184,6 @@ class SecurityTests(unittest.TestCase):
                  {"mediaType": "application/vnd.docker.distribution.manifest.list.v2+json", "size": 1, "digest": digest, "schemaVersion": 2},
                  {"mediaType": media, "size": 1, "digest": digest, "schemaVersion": 1},
                  {"mediaType": media, "size": 1, "digest": digest, "schemaVersion": "2"},
-                 {"mediaType": media, "size": 1, "digest": digest},
                  {"mediaType": "application/vnd.unknown.image.v0+json", "size": 1, "digest": digest, "schemaVersion": 2}]
         for value in cases:
             with self.subTest(value=value), patch.object(producer, "run", side_effect=["", producer.json.dumps(value)]), self.assertRaises(ValueError):
@@ -185,18 +194,35 @@ class SecurityTests(unittest.TestCase):
         config = "sha256:" + "c" * 64
         descriptor = producer.json.dumps({"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
                                           "size": 1382, "digest": digest, "schemaVersion": 2})
-        readback = producer.json.dumps({"config": {"digest": config}})
+        readback = producer.json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json", "config": {"digest": config}})
         with patch.object(producer, "run", side_effect=["", descriptor, readback, producer.json.dumps({"Id": config})]) as run:
             producer.publish("candidate")
         run.assert_any_call("docker", "push", "--platform", "linux/amd64", "--quiet", "candidate")
 
     def test_unexpected_index_response_is_refused(self):
         digest = "sha256:" + "a" * 64
-        index = {"mediaType": "application/vnd.oci.image.index.v1+json", "manifests": []}
+        index = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": []}
         descriptor = producer.json.dumps({"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
                                           "size": 1382, "digest": digest, "schemaVersion": 2})
         with patch.object(producer, "run", side_effect=["", descriptor, producer.json.dumps(index), producer.json.dumps({"Id": "sha256:" + "c" * 64})]), self.assertRaisesRegex(ValueError, "current candidate"):
             producer.publish("candidate")
+
+    def test_immutable_readback_schema_is_validated_on_the_raw_manifest(self):
+        digest = "sha256:" + "a" * 64
+        config = "sha256:" + "c" * 64
+        media = "application/vnd.oci.image.manifest.v1+json"
+        descriptor = producer.json.dumps({"digest": digest, "mediaType": media, "size": 1246})
+        for schema in (None, 1, True, 2.0, "2"):
+            raw = producer.json.dumps({"schemaVersion": schema, "mediaType": media, "config": {"digest": config}})
+            with self.subTest(schema=schema), patch.object(producer, "run", side_effect=["", descriptor, raw]), self.assertRaises(ValueError):
+                producer.publish("candidate")
+
+    def test_descriptor_size_is_a_bounded_positive_integer(self):
+        for size in (None, 0, -1, True, 2.0, "1246", 1024 * 1024 + 1):
+            descriptor = {"digest": "sha256:" + "a" * 64,
+                          "mediaType": "application/vnd.oci.image.manifest.v1+json", "size": size}
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                producer.registry_descriptor_digest(descriptor)
 
     def test_unavailable_tested_platform_cannot_advance_publication(self):
         error = producer.subprocess.CalledProcessError(1, ["docker", "push"], stderr="linux/amd64 platform unavailable")
@@ -209,7 +235,7 @@ class SecurityTests(unittest.TestCase):
         digest = "sha256:" + "a" * 64
         descriptor = producer.json.dumps({"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
                                           "size": 1382, "digest": digest, "schemaVersion": 2})
-        with patch.object(producer, "run", side_effect=["", descriptor, producer.json.dumps({'config': {'digest': 'sha256:' + 'b' * 64}}), producer.json.dumps({'Id': 'sha256:' + 'c' * 64})]), self.assertRaisesRegex(ValueError, "current candidate"):
+        with patch.object(producer, "run", side_effect=["", descriptor, producer.json.dumps({'schemaVersion': 2, 'mediaType': 'application/vnd.docker.distribution.manifest.v2+json', 'config': {'digest': 'sha256:' + 'b' * 64}}), producer.json.dumps({'Id': 'sha256:' + 'c' * 64})]), self.assertRaisesRegex(ValueError, "current candidate"):
             producer.publish("candidate")
 
 
