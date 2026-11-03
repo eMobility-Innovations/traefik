@@ -72,3 +72,44 @@ platform, sole layer's diff ID, canonical regular-file member and exact expected
 bytes must all pass the archive verifier before either last-good local file advances.
 A failed readback leaves both files untouched; the next native tick can retry with a
 fresh immutable candidate tag after repeating the acceptance checks.
+
+## Dedicated builder installation
+
+The native host module is assigned only to `esc:197`; its existing reconcile tick
+delivers this repository's installer and two root-owned mode-0600 native inputs
+into that CT. Inside the CT it invokes `overlay/install-builder.sh` with
+`--source-commit`, `--producer-config` and `--publisher-docker-config`. The source
+commit must be a complete ancestor of canonical organization `main`; the producer
+input must name that same `overlay_commit` and `/opt/traefik-readiness/source.git`.
+The publisher input is an existing native Docker configuration, copied opaquely
+into `/var/lib/traefik-readiness/docker/config.json`; global Docker configuration
+is never changed and no credential is printed or minted.
+
+The installer creates a controlled bare mirror with exactly the policy above and
+materializes protected source under `/opt/traefik-readiness/releases/<commit>`,
+including `overlay/`, `verify.sh`, `REPO-CONTRACT.toml` and the vendor validation
+pins at `.github/workflows/validate.yaml`. It checks the official Go archive
+against `build-inputs.lock` and installs only into the dedicated versioned
+`/opt/traefik-readiness/tools/go1.27.3` tree. It never replaces global Go.
+The fixed root gate derives its compiler version from that protected lock and
+executes the protected versioned `overlay/validate.sh <candidate>` followed by
+the candidate's `./verify.sh`. Candidates must belong to the controlled mirror.
+
+Successful installation atomically writes the root-only completion receipt
+`/var/lib/traefik-readiness/builder-installed.json` with exactly `schema_version: 1`,
+`source_commit` and `go_version`, after all runtime files activate, then emits
+`INSTALLED`; absent native inputs or an active
+producer lock emit `PENDING` with a reason and no invented defaults. The caller
+retries pending work through its existing tick. Validation and compiler failures
+leave the prior runtime wrappers in place. No service, timer or cadence is added.
+The no-argument producer remains `/usr/local/sbin/traefik-readiness-reconcile`.
+`--dest-root` is accepted only when the installer is sourced by the isolated root
+fixture and only for `/root/traefik-builder-test-*/target`; the production executable
+rejects destination overrides. The native caller always uses the fixed real paths.
+
+Unprivileged parsing and policy tests run on the managed gate runner. The separate
+`overlay/tests/builder_install_root_fixture.py` acceptance rail runs as root on
+the existing builder using unique private fixture roots, fake source/download
+boundaries and a fake dedicated SDK. It proves ownership, modes, checksum refusal,
+last-good preservation, the producer lock, and actual fixed-gate compiler/bootstrap
+dispatch while leaving production paths, registry state and other build jobs alone.
