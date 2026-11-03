@@ -26,7 +26,7 @@ class BuilderInstallTests(unittest.TestCase):
             shutil.copyfile(OVERLAY / name, self.source / "overlay" / name)
         (self.source / ".github/workflows").mkdir(parents=True)
         (self.source / ".github/workflows/validate.yaml").write_text("fixture-pins: protected\n")
-        (self.source / "overlay/validate.sh").write_text('#!/bin/sh\nprintf "bootstrap\\n" >>"$1/calls"\ngo version >"$1/compiler"\n')
+        (self.source / "overlay/validate.sh").write_text('#!/bin/sh\nprintf "bootstrap\\n" >>"$1/calls"\ngo version >"$1/compiler"\nprintf "%s|%s\\n" "$GOMAXPROCS" "$GOFLAGS" >"$1/go-bounds"\n')
         (self.source / "overlay/validate.sh").chmod(0o755)
         self.config = self.root / "producer.json"
         lock = dict(line.split("=",1) for line in (OVERLAY / "build-inputs.lock").read_text().splitlines() if line and not line.startswith("#"))
@@ -137,6 +137,24 @@ _git --git-dir="$mirror" worktree add --detach "$candidate" "$commit" >/dev/null
         self.assertEqual(checked.returncode,0,checked.stderr)
         self.assertEqual((candidate / "calls").read_text(),"bootstrap\nverify\n")
         self.assertEqual((candidate / "compiler").read_text().strip(),"go version go1.27.3 linux/amd64")
+        self.assertEqual((candidate / "go-bounds").read_text().strip(),"4|-p=4")
+
+    def test_verify_rail_passes_approved_bounds_to_every_go_invocation(self):
+        root = self.root / "verify-rail"
+        (root / "overlay/tests").mkdir(parents=True)
+        shutil.copyfile(OVERLAY.parent / "verify.sh", root / "verify.sh")
+        (root / "overlay/tests/check_python_coverage.py").write_text("raise SystemExit(0)\n")
+        (root / "overlay/tests/test_promotion_manifest.sh").write_text("#!/bin/sh\nexit 0\n")
+        tools = root / "bin"
+        tools.mkdir()
+        (tools / "go").write_text('#!/bin/sh\nprintf "%s|%s\\n" "$GOMAXPROCS" "$GOFLAGS" >>"$BOUND_LOG"\n')
+        (tools / "go").chmod(0o755)
+        environment = dict(__import__("os").environ, PATH=str(tools)+":"+__import__("os").environ["PATH"],
+                           GOMAXPROCS="99",GOFLAGS="-p=99",BOUND_LOG=str(root / "bounds"))
+        result = subprocess.run(["bash",str(root / "verify.sh")],env=environment,check=False,
+                                capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((root / "bounds").read_text().splitlines(),["4|-p=4"]*4)
 
     def test_install_private_inputs_and_fixed_noargument_entrypoint(self):
         result = self.invoke()

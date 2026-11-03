@@ -6,7 +6,9 @@ protected_source='@SOURCE_ROOT@'
 tools_root='@TOOLS_ROOT@'
 mirror_root='@MIRROR_ROOT@'
 PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-export PATH
+GOMAXPROCS=4
+GOFLAGS='-p=4'
+export PATH GOMAXPROCS GOFLAGS
 candidate=$(/usr/bin/python3 - "$protected_source" "$mirror_root" "$1" <<'PY'
 import importlib.util
 from pathlib import Path
