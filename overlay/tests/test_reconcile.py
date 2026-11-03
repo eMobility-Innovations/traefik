@@ -1,6 +1,7 @@
 """Checks the producer's release selection and fail-closed configuration boundary."""
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +62,32 @@ class ProducerTests(unittest.TestCase):
     def test_missing_fixture_refuses_overlay(self):
         with patch.object(producer, "run", return_value="overlay/Dockerfile\nverify.sh"), self.assertRaisesRegex(ValueError, "complete overlay"):
             producer.install_overlay(Path("/candidate"), "d" * 40)
+
+    def test_composed_git_candidate_runs_reviewed_validation(self):
+        root = Path(__file__).resolve().parents[2]
+        validator = "script/validate-shell-script.sh"
+        regression = "overlay/tests/test_shell_detection.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary)
+            producer.run("git", "init", cwd=candidate)
+            (candidate / "script").mkdir()
+            shutil.copyfile(root / "overlay/tests/fixtures/validate-shell-script-stock.sh",
+                            candidate / validator)
+            producer.run("git", "add", ".", cwd=candidate)
+            producer.run("git", "commit", "-m", "stock upstream", cwd=candidate)
+            base = producer.run("git", "rev-parse", "HEAD", cwd=candidate)
+            for relative in producer.REQUIRED_OVERLAY | {validator, regression}:
+                target = candidate / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / relative, target)
+            producer.run("git", "add", ".", cwd=candidate)
+            producer.run("git", "commit", "-m", "reviewed overlay", cwd=candidate)
+            reviewed = producer.run("git", "rev-parse", "HEAD", cwd=candidate)
+            producer.run("git", "checkout", "--detach", base, cwd=candidate)
+            producer.install_overlay(candidate, reviewed)
+            result = producer.run("bash", regression, cwd=candidate)
+            self.assertIn("shell detection regression and mutation checks passed", result)
+            self.assertEqual((candidate / validator).read_bytes(), (root / validator).read_bytes())
 
     def test_changed_official_tag_refuses_source(self):
         with patch.object(producer, "run", side_effect=["", "different-object"]), self.assertRaisesRegex(ValueError, "differs from advertised"):

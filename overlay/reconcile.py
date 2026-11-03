@@ -21,13 +21,14 @@ from pathlib import Path
 
 REPOSITORY = "https://github.com/traefik/traefik.git"
 ORG_REPOSITORY = "https://github.com/eMobility-Innovations/traefik.git"
-OVERLAY_PATHS = ("overlay", "verify.sh", "REPO-CONTRACT.toml")
+OVERLAY_PATHS = ("overlay", "verify.sh", "REPO-CONTRACT.toml", "script/validate-shell-script.sh")
 REQUIRED_OVERLAY = {"overlay/Dockerfile", "overlay/build-image.sh", "overlay/build-inputs.lock",
                     "overlay/emit-promotion-manifest.sh", "overlay/verify_image_startup.py",
                     "overlay/promotion-manifest.schema.json", "overlay/reconcile.py",
                     "overlay/tests/test_reconcile.py", "overlay/tests/test_producer_security.py",
                     "overlay/traefik-readiness-gate", "overlay/verify_promotion_artifact.py",
                     "overlay/tests/test_promotion_artifact.py", "overlay/tests/test_promotion_manifest.sh",
+                    "overlay/tests/test_shell_detection.sh", "script/validate-shell-script.sh",
                     "verify.sh", "REPO-CONTRACT.toml"}
 PROMOTION_TAG = "registry.fiszu.com/emobility/traefik:promotion-linux-amd64"
 GATE_COMMAND = Path("/usr/local/libexec/traefik-readiness-gate")
