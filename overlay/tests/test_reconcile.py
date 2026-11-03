@@ -18,8 +18,10 @@ class ProducerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)
             secret = 'registry-password=do-not-leak'
+            bearer = 'Authorization: Bearer do-not-leak'
+            token = 'token: Bearer do-not-leak-too'
             failure = subprocess.CalledProcessError(
-                1, [str(producer.GATE_COMMAND)], output='missing shellcheck', stderr=secret)
+                1, [str(producer.GATE_COMMAND)], output='missing shellcheck', stderr='\n'.join((secret, bearer, token)))
             with patch.object(producer, "validate_root_path"), patch.object(producer.os, "access", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(producer, "run", side_effect=failure), self.assertRaises(subprocess.CalledProcessError):
                 producer.run_gate(Path("/candidate"), state, "a" * 40)
             receipt = json.loads((state / "gate-failure.json").read_text())
@@ -28,6 +30,7 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(receipt["source_commit"], "a" * 40)
             self.assertIn("missing shellcheck", receipt["stdout"])
             self.assertNotIn(secret, json.dumps(receipt))
+            self.assertNotIn('do-not-leak', json.dumps(receipt))
 
     def test_newest_stable_excludes_preview_and_peeled_tags(self):
         rows = "a refs/tags/v3.7.9\nb refs/tags/v3.7.17\nc refs/tags/v3.8.0-rc1\nd refs/tags/v3.7.17^{}"

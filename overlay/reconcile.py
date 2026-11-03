@@ -98,7 +98,8 @@ def validate_build_inputs(config):
 
 def _redact_gate_output(value):
     value = value or ""
-    value = re.sub(r"(?i)([a-z0-9_-]*(?:password|token|authorization|auth))\s*[:=]\s*[^\s,]+", r"\1=<redacted>", value)
+    value = re.sub(r"(?im)^([^\n:=]*(?:password|token|authorization|auth)[^\n:=]*)\s*[:=].*$", r"\1=<redacted>", value)
+    value = re.sub(r"(?i)(https?://)[^/\s:@]+:[^@\s/]+@", r"\1<redacted>@", value)
     return value[:4096]
 
 
