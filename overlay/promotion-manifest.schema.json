@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fleet Traefik promotion manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_repo", "upstream_version", "upstream_commit", "patch_commit", "image_ref", "platform", "tests_passed", "tls_canary_passed", "provenance"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_repo": {"const": "https://github.com/eMobility-Innovations/traefik"},
+    "upstream_version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "upstream_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "patch_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image_ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*@sha256:[0-9a-f]{64}$"},
+    "platform": {"const": "linux/amd64"},
+    "tests_passed": {"const": true},
+    "tls_canary_passed": {"const": true},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["build_recipe_sha256", "build_timestamp_utc"], "properties": {"build_recipe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "build_timestamp_utc": {"type": "string", "format": "date-time"}}}
+  }
+}
