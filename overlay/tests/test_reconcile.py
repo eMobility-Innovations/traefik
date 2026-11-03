@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,21 @@ spec.loader.exec_module(producer)
 
 
 class ProducerTests(unittest.TestCase):
+    def test_gate_failure_is_private_bounded_and_redacts_secrets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            secret = 'registry-password=do-not-leak'
+            failure = subprocess.CalledProcessError(
+                1, [str(producer.GATE_COMMAND)], output='missing shellcheck', stderr=secret)
+            with patch.object(producer, "validate_root_path"), patch.object(producer.os, "access", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(producer, "run", side_effect=failure), self.assertRaises(subprocess.CalledProcessError):
+                producer.run_gate(Path("/candidate"), state, "a" * 40)
+            receipt = json.loads((state / "gate-failure.json").read_text())
+            self.assertEqual(receipt["phase"], "gate")
+            self.assertEqual(receipt["tool"], "traefik-readiness-gate")
+            self.assertEqual(receipt["source_commit"], "a" * 40)
+            self.assertIn("missing shellcheck", receipt["stdout"])
+            self.assertNotIn(secret, json.dumps(receipt))
+
     def test_newest_stable_excludes_preview_and_peeled_tags(self):
         rows = "a refs/tags/v3.7.9\nb refs/tags/v3.7.17\nc refs/tags/v3.8.0-rc1\nd refs/tags/v3.7.17^{}"
         self.assertEqual(producer.latest_release(rows), ((3, 7, 17), "b", "v3.7.17"))
