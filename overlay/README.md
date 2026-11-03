@@ -60,11 +60,12 @@ the local last-good manifest and input marker advance. No new service, credentia
 or schedule is introduced. `verify_promotion_artifact.py` exercises the real Docker
 archive locally and removes its fixture image; it never pushes a fixture.
 
-Docker storage engines expose different image identities: containerd-backed Docker
-uses the manifest digest in `.Id`, with the configuration digest in
-`.Descriptor.annotations["config.digest"]`; classic storage uses the config ID.
-The producer binds registry configuration digests to that explicit local config
-identity and refuses an unsupported descriptor without that annotation.
+Modern Docker uses an OCI index or manifest digest in `.Id`; a configuration
+annotation is not assumed. The producer saves the exact Linux/amd64 platform into
+a private archive, checks its sole image and platform, and hashes the raw config
+bytes. Registry readback must match that configuration digest. Descriptor-bearing
+engines never fall back to `.Id`; classic storage without a descriptor uses its
+legacy config ID.
 
 Artifact acceptance also pulls the **same immutable pushed digest** for Linux/amd64
 and saves it without executing it. The pulled configuration identity, Linux/amd64
