@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import uuid
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 
 REPOSITORY = "https://github.com/traefik/traefik.git"
@@ -169,15 +170,44 @@ def verify_artifact_archive(path, image_id, payload):
             raise ValueError("promotion artifact payload differs from verified manifest")
 
 
+def matches(pattern, value):
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def validate_provenance(value):
+    if not isinstance(value, dict) or set(value) != {"build_recipe_sha256", "build_timestamp_utc"}:
+        raise ValueError("promotion provenance fields do not match the canonical schema")
+    if not matches(r"[a-f0-9]{64}", value["build_recipe_sha256"]):
+        raise ValueError("promotion recipe identity must be a SHA256 digest")
+    timestamp = value["build_timestamp_utc"]
+    if not matches(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", timestamp):
+        raise ValueError("promotion build timestamp must be an RFC3339 UTC timestamp")
+    datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+
+def validate_promotion(value, verified_image):
+    fields = {"schema_version", "source_repo", "upstream_version", "upstream_commit", "patch_commit",
+              "image_ref", "platform", "tests_passed", "tls_canary_passed", "provenance"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError("promotion fields do not match the canonical schema")
+    if (type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or value["source_repo"] != ORG_REPOSITORY.removesuffix(".git")
+            or value["platform"] != "linux/amd64" or value["tests_passed"] is not True
+            or value["tls_canary_passed"] is not True):
+        raise ValueError("promotion authority, platform or checks are invalid")
+    patterns = {"upstream_version": r"v[0-9]+\.[0-9]+\.[0-9]+",
+                "upstream_commit": r"[a-f0-9]{40}", "patch_commit": r"[a-f0-9]{40}"}
+    if not all(matches(pattern, value[field]) for field, pattern in patterns.items()):
+        raise ValueError("promotion release and commit identities must be complete")
+    if (not matches(re.escape(IMAGE) + r"@sha256:[a-f0-9]{64}", verified_image)
+            or value["image_ref"] != verified_image):
+        raise ValueError("promotion payload must describe the verified candidate image")
+    validate_provenance(value["provenance"])
+
+
 def promotion_payload(path, verified_image):
     payload = path.read_bytes()
-    value = json.loads(payload)
-    if (not DIGEST.fullmatch(verified_image) or not verified_image.startswith(IMAGE + "@sha256:")
-            or value.get("image_ref") != verified_image
-            or value.get("source_repo") != ORG_REPOSITORY.removesuffix(".git")
-            or value.get("platform") != "linux/amd64" or value.get("schema_version") != 1
-            or value.get("tests_passed") is not True or value.get("tls_canary_passed") is not True):
-        raise ValueError("promotion payload must describe the verified candidate image")
+    validate_promotion(json.loads(payload), verified_image)
     return payload
 
 
