@@ -1,0 +1,10 @@
+# Update only after checking https://go.dev/dl/?mode=json and recording the official
+# linux/amd64 archive checksum below. The build invocation still supplies a digest-pinned
+# OCI builder image; this lock prevents silently selecting an older Go patch release.
+GO_VERSION=go1.27.3
+GO_LINUX_AMD64_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+# Resolved through CT197 Docker's official registry client on 2026-11-03.
+# Runtime and Node releases follow the upstream v3.7.17 runtime/WebUI recipes.
+BUILD_IMAGE=docker.io/library/golang@sha256:5bbe76a31abbe0f1449d7820e550131c020b097c24d3bcfc5ad1231779982c1c
+RUNTIME_IMAGE=docker.io/library/traefik@sha256:c999a937a1bb51ba36c79adf2c9db1d1bb196896b66d524d30ef4945606d565f
+WEBUI_IMAGE=docker.io/library/node@sha256:4eefa1bfce4197942661ef9148247d779ddf1bb0ee006d3294a467609de60724

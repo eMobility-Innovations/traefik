@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Keep vendor validation dependencies private to this invocation.
+set -euo pipefail
+umask 077
+# Bound compiler and analyzer fan-out within this validation process.
+export GOMAXPROCS=4 GOFLAGS=-p=4
+repo=$(cd "$(dirname "$0")/.." && pwd)
+if (( $# > 1 )); then
+    echo 'Usage: validate.sh [candidate-root]' >&2
+    exit 2
+fi
+candidate=$repo
+if (( $# == 1 )); then
+    candidate=$1
+fi
+if [[ ! -d $candidate ]]; then
+    echo 'Candidate root must be an existing directory.' >&2
+    exit 2
+fi
+candidate=$(cd -- "$candidate" && pwd -P)
+command -v go >/dev/null
+command -v shellcheck >/dev/null
+pins="$repo/.github/workflows/validate.yaml"
+lint_version=$(awk '$1 == "GOLANGCI_LINT_VERSION:" {print $2}' "$pins")
+spell_version=$(awk '$1 == "MISSPELL_VERSION:" {print $2}' "$pins")
+for version in "$lint_version" "$spell_version"; do
+    if [[ ! $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo 'Vendor validation tool version must be an exact stable tag.' >&2
+        exit 2
+    fi
+done
+validation_dir=$(mktemp -d "${TMPDIR:-/tmp}/traefik-validate.XXXXXXXX")
+trap 'rm -r -- "$validation_dir"' EXIT
+lint_bin="$validation_dir/golangci-lint-$lint_version/bin"
+spell_bin="$validation_dir/misspell-$spell_version/bin"
+mkdir -p "$lint_bin" "$spell_bin"
+# Module checksums remain mandatory even when a caller has private-module settings.
+GOBIN="$lint_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB='' GOPRIVATE='' GOTOOLCHAIN=local \
+    go install -p 4 "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$lint_version"
+GOBIN="$spell_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB='' GOPRIVATE='' GOTOOLCHAIN=local \
+    go install -p 4 "github.com/golangci/misspell/cmd/misspell@$spell_version"
+cd "$candidate"
+PATH="$lint_bin:$spell_bin:$PATH" make validate

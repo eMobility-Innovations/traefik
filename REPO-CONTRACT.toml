@@ -1,0 +1,42 @@
+# THE REPO CONTRACT — see claude-code-policy templates/REPO-CONTRACT.toml for the field guide.
+
+[repo]
+name = "traefik"
+what_it_is = "The eMobility-Innovations fork of Traefik plus a small, auditable build overlay for fleet edge images."
+what_it_does = """
+Builds a Linux/amd64 Traefik image from a pinned upstream commit and the reviewed readiness
+patch. The overlay records immutable-image provenance and supplies the promotion manifest
+that fleet control may consume. It does not write compose files, start containers, or replace
+an edge's stock image: fleet control remains the only deployment owner.
+"""
+owner = "eMobility-Innovations — Patryk Radek"
+status = "active"
+
+[rules]
+must = [
+  "Fleet control may promote only an immutable linux/amd64 digest whose manifest names this fork, complete commits, and successful focused and TLS-canary checks (overlay/tests/test_promotion_manifest.sh).",
+  "The Docker build takes pinned source/version/runtime inputs and preserves the upstream runtime entrypoint; it contains no registry credentials (overlay/Dockerfile, overlay/build-image.sh).",
+  "The startup regression is behavioral: the focused server test must be red on stock behavior and green only when initial TLS configuration is applied before accepting a handshake (pkg/server/server_startup_test.go).",
+]
+
+[tests]
+command = "./verify.sh"
+suite = "overlay/tests/"
+covers = """
+The 80% executable-line coverage floor applies to every owned production Python file
+under overlay/, including reconcile.py, verify_promotion_artifact.py and any future
+production helper. Only overlay/tests/ and the separate verify_image_startup.py Docker
+acceptance harness are outside that Python production scope. The vendored upstream Go
+baseline is validated separately through focused behavioral/race tests and make validate;
+its baseline coverage is not represented as owned Python coverage.
+
+The overlay suite rejects a promotion manifest with a mutable image reference, incomplete
+commit provenance, a non-amd64 platform, or missing successful checks. The focused Go gate
+executes the behavioral startup test supplied by the readiness patch; its stock mutation
+fixture establishes that the test would have caught the original early-accept behavior.
+"""
+coverage_floor = 80
+parallel = 1
+
+[runner]
+toolchains = ["go@1.27.3"]
