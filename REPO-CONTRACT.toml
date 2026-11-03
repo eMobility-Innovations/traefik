@@ -39,4 +39,4 @@ coverage_floor = 80
 parallel = 1
 
 [runner]
-toolchains = ["go@1.27.0"]
+toolchains = ["go@1.27.3"]
