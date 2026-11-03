@@ -96,11 +96,30 @@ def validate_build_inputs(config):
         raise ValueError("producer images must equal the trusted build lock")
 
 
-def run_gate(checkout):
+def _redact_gate_output(value):
+    value = value or ""
+    value = re.sub(r"(?im)^([^\n:=]*(?:password|token|authorization|auth)[^\n:=]*)\s*[:=].*$", r"\1=<redacted>", value)
+    value = re.sub(r"(?i)(https?://)[^/\s:@]+:[^@\s/]+@", r"\1<redacted>@", value)
+    return value[:4096]
+
+
+def run_gate(checkout, state=None, source_commit=None):
     validate_root_path(GATE_COMMAND)
     if not GATE_COMMAND.is_file() or not os.access(GATE_COMMAND, os.X_OK):
         raise ValueError("fixed gate must be an executable regular file")
-    run(str(GATE_COMMAND), str(checkout), cwd=checkout)
+    try:
+        run(str(GATE_COMMAND), str(checkout), cwd=checkout)
+    except subprocess.CalledProcessError as error:
+        if state is None or source_commit is None:
+            raise
+        receipt = {"phase": "gate", "tool": "traefik-readiness-gate", "source_commit": source_commit,
+                   "exit_code": error.returncode, "stdout": _redact_gate_output(error.output),
+                   "stderr": _redact_gate_output(error.stderr)}
+        pending = state / "gate-failure.json.new"
+        pending.write_text(json.dumps(receipt, sort_keys=True))
+        os.chmod(pending, 0o600)
+        os.replace(pending, state / "gate-failure.json")
+        raise
 
 
 def candidate_tag(version, fingerprint):
@@ -356,7 +375,7 @@ def reconcile(config_path, state):
                 run("git", "cherry-pick", *config["patch_commits"], cwd=checkout)
                 install_overlay(checkout, config["overlay_commit"])
                 patch_commit = run("git", "rev-parse", "HEAD", cwd=checkout)
-                run_gate(checkout)
+                run_gate(checkout, state, config["overlay_commit"])
                 tag = candidate_tag(version, fingerprint)
                 require_unused_tag(tag)
                 run("bash", "overlay/build-image.sh", "--build-image", config["build_image"],

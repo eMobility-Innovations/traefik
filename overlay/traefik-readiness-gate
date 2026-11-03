@@ -28,8 +28,12 @@ print(candidate)
 PY
 )
 go_version=$(awk -F= '$1 == "GO_VERSION" {print $2}' "$protected_source/overlay/build-inputs.lock")
+shellcheck_version=$(awk -F= '$1 == "SHELLCHECK_VERSION" {print $2}' "$protected_source/overlay/build-inputs.lock")
 [[ $go_version =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 65
-PATH="$tools_root/$go_version/bin:$PATH"
+[[ $shellcheck_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 65
+shellcheck="$tools_root/shellcheck-$shellcheck_version/bin/shellcheck"
+[[ -x $shellcheck ]] || { printf 'gate preflight: missing pinned ShellCheck %s\n' "$shellcheck_version" >&2; exit 65; }
+PATH="$tools_root/$go_version/bin:$(dirname "$shellcheck"):$PATH"
 export PATH
 [[ $(GOTOOLCHAIN=local "$tools_root/$go_version/bin/go" version) == "go version $go_version linux/amd64" ]] || exit 65
 "$protected_source/overlay/validate.sh" "$candidate"

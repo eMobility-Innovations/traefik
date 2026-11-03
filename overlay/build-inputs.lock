@@ -3,6 +3,9 @@
 # OCI builder image; this lock prevents silently selecting an older Go patch release.
 GO_VERSION=go1.27.3
 GO_LINUX_AMD64_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+# ShellCheck v0.11.0 linux/amd64 archive, SHA-256 from its official GitHub release asset.
+SHELLCHECK_VERSION=v0.11.0
+SHELLCHECK_LINUX_AMD64_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
 # Resolved through CT197 Docker's official registry client on 2026-11-03.
 # Runtime and Node releases follow the upstream v3.7.17 runtime/WebUI recipes.
 BUILD_IMAGE=docker.io/library/golang@sha256:5bbe76a31abbe0f1449d7820e550131c020b097c24d3bcfc5ad1231779982c1c
