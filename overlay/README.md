@@ -45,9 +45,8 @@ symlinks, and deny group/other writes. The mirror has exactly this local configu
 
 Global/system Git configuration, inherited Git environment overrides, hooks, filesystem
 monitoring, replacement objects and grafts are disabled. The producer supplies an explicit
-automation committer identity. Candidate tags include the full input fingerprint and an
-existing tag is refused. The digest returned by the push is read back from the registry;
-its configuration digest must equal the current candidate image ID before promotion.
+automation committer identity. Candidate tags include the full input fingerprint and a fresh attempt UUID; an existing tag is refused. A retry after a post-image-push failure reruns the source gate and TLS proof under a new tag, so it never overwrites or blindly reuses the prior candidate. The digest returned by the push is read back from the registry;
+its configuration digest must equal the current candidate configuration digest before promotion.
 Local historical `RepoDigests` never select the promoted artifact.
 
 Successful promotion JSON is published as a **data-only scratch OCI image** in the
@@ -66,3 +65,10 @@ uses the manifest digest in `.Id`, with the configuration digest in
 `.Descriptor.annotations["config.digest"]`; classic storage uses the config ID.
 The producer binds registry configuration digests to that explicit local config
 identity and refuses an unsupported descriptor without that annotation.
+
+Artifact acceptance also pulls the **same immutable pushed digest** for Linux/amd64
+and saves it without executing it. The pulled configuration identity, Linux/amd64
+platform, sole layer's diff ID, canonical regular-file member and exact expected JSON
+bytes must all pass the archive verifier before either last-good local file advances.
+A failed readback leaves both files untouched; the next native tick can retry with a
+fresh immutable candidate tag after repeating the acceptance checks.

@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 from contextlib import suppress
 from pathlib import Path
 
@@ -102,7 +103,7 @@ def run_gate(checkout):
 
 def candidate_tag(version, fingerprint):
     identity = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode()).hexdigest()
-    return f"{IMAGE}:{version}-{identity}"
+    return f"{IMAGE}:{version}-{identity}-{uuid.uuid4().hex}"
 
 
 def require_unused_tag(tag):
@@ -155,7 +156,10 @@ def verify_artifact_archive(path, image_id, payload):
         layer = archive.extractfile(manifest[0]["Layers"][0]).read()
     if layer.startswith(b"\x1f\x8b"):
         layer = gzip.decompress(layer)
-    if json.loads(config).get("rootfs", {}).get("diff_ids") != [sha256(layer)]:
+    metadata = json.loads(config)
+    if metadata.get("architecture") != "amd64" or metadata.get("os") != "linux":
+        raise ValueError("promotion artifact platform must be linux/amd64")
+    if metadata.get("rootfs", {}).get("diff_ids") != [sha256(layer)]:
         raise ValueError("promotion artifact layer digest differs from configuration")
     with tarfile.open(fileobj=io.BytesIO(layer), mode="r:") as archive:
         members = archive.getmembers()
@@ -187,7 +191,7 @@ def build_promotion_artifact(pending, verified_image):
         try:
             run("docker", "buildx", "build", "--platform", "linux/amd64", "--load", "--provenance=false",
                 "--sbom=false", "--network=none", "--tag", tag, str(context))
-            run("docker", "image", "save", "--output", str(context / "artifact.tar"), tag)
+            run("docker", "image", "save", "--platform", "linux/amd64", "--output", str(context / "artifact.tar"), tag)
             verify_artifact_archive(context / "artifact.tar", local_config_digest(tag), payload)
         except BaseException:
             with suppress(subprocess.CalledProcessError):
@@ -196,11 +200,24 @@ def build_promotion_artifact(pending, verified_image):
     return tag
 
 
+def verify_published_promotion(reference, pending, verified_image):
+    if not DIGEST.fullmatch(reference) or not reference.startswith(IMAGE + "@sha256:"):
+        raise ValueError("promotion readback requires an immutable approved repository digest")
+    payload = promotion_payload(pending, verified_image)
+    with tempfile.TemporaryDirectory(prefix="traefik-promotion-readback-", dir=pending.parent) as temporary:
+        archive = Path(temporary) / "artifact.tar"
+        run("docker", "pull", "--platform", "linux/amd64", reference)
+        run("docker", "image", "save", "--platform", "linux/amd64", "--output", str(archive), reference)
+        verify_artifact_archive(archive, local_config_digest(reference), payload)
+
+
 def publish_promotion(pending, verified_image):
     tag = build_promotion_artifact(pending, verified_image)
     try:
         run("docker", "tag", tag, PROMOTION_TAG)
-        return publish(PROMOTION_TAG)
+        reference = publish(PROMOTION_TAG)
+        verify_published_promotion(reference, pending, verified_image)
+        return reference
     finally:
         run("docker", "image", "rm", tag)
 
