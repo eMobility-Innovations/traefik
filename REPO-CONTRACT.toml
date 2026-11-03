@@ -23,12 +23,19 @@ must = [
 command = "./verify.sh"
 suite = "overlay/tests/"
 covers = """
+The 80% executable-line coverage floor applies to every owned production Python file
+under overlay/, including reconcile.py, verify_promotion_artifact.py and any future
+production helper. Only overlay/tests/ and the separate verify_image_startup.py Docker
+acceptance harness are outside that Python production scope. The vendored upstream Go
+baseline is validated separately through focused behavioral/race tests and make validate;
+its baseline coverage is not represented as owned Python coverage.
+
 The overlay suite rejects a promotion manifest with a mutable image reference, incomplete
 commit provenance, a non-amd64 platform, or missing successful checks. The focused Go gate
 executes the behavioral startup test supplied by the readiness patch; its stock mutation
 fixture establishes that the test would have caught the original early-accept behavior.
 """
-coverage_floor = 0
+coverage_floor = 80
 parallel = 1
 
 [runner]

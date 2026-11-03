@@ -14,6 +14,14 @@ producer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(producer)
 
 
+def valid_promotion(image):
+    return {"schema_version":1, "source_repo":producer.ORG_REPOSITORY.removesuffix(".git"),
+            "upstream_version":"v3.7.17", "upstream_commit":"b"*40, "patch_commit":"c"*40,
+            "image_ref":image, "platform":"linux/amd64", "tests_passed":True,
+            "tls_canary_passed":True, "provenance":{"build_recipe_sha256":"d"*64,
+                                                      "build_timestamp_utc":"2026-11-03T00:00:00Z"}}
+
+
 def archive(path, names, payload=b'{"test":"fixture"}', wrong_diff_id=False, architecture="amd64"):
     layer = io.BytesIO()
     with tarfile.open(fileobj=layer, mode="w") as tar:
@@ -71,16 +79,14 @@ class PromotionArtifactTests(unittest.TestCase):
     def test_mismatched_image_never_builds_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             pending = Path(temporary) / "pending.json"
-            pending.write_text(json.dumps({"image_ref":"wrong"}))
+            pending.write_text(json.dumps(valid_promotion("wrong")))
             with patch.object(producer, "run") as run, self.assertRaises(ValueError):
                 producer.build_promotion_artifact(pending, producer.IMAGE + "@sha256:" + "a"*64)
             run.assert_not_called()
 
     def test_real_build_context_is_scratch_and_validated_before_publish(self):
         image = producer.IMAGE + "@sha256:" + "a" * 64
-        value = {"image_ref": image, "source_repo": producer.ORG_REPOSITORY.removesuffix(".git"),
-                 "platform": "linux/amd64", "schema_version": 1, "tests_passed": True,
-                 "tls_canary_passed": True}
+        value = valid_promotion(image)
         identity = None
         with tempfile.TemporaryDirectory() as temporary:
             pending = Path(temporary) / "pending.json"
@@ -131,9 +137,7 @@ class PromotionArtifactTests(unittest.TestCase):
     def test_published_artifact_is_pulled_by_digest_and_fully_checked(self):
         image = producer.IMAGE + "@sha256:" + "a" * 64
         reference = producer.IMAGE + "@sha256:" + "b" * 64
-        value = {"image_ref":image, "source_repo":producer.ORG_REPOSITORY.removesuffix(".git"),
-                 "platform":"linux/amd64", "schema_version":1, "tests_passed":True,
-                 "tls_canary_passed":True}
+        value = valid_promotion(image)
         for corrupted in (False, "payload", "diff_id"):
             with self.subTest(corrupted=corrupted), tempfile.TemporaryDirectory() as temporary:
                 pending = Path(temporary) / "pending.json"
@@ -209,6 +213,40 @@ class PromotionArtifactTests(unittest.TestCase):
             self.assertEqual(result["promotion_artifact_ref"], artifact)
             self.assertEqual(final.read_text(), "candidate")
             self.assertNotEqual(marker.read_text(), '{"last_good":true}')
+
+    def test_full_manifest_schema_and_provenance_are_required(self):
+        image = producer.IMAGE + "@sha256:" + "a"*64
+        cases = [("schema_version",True), ("upstream_version","latest"), ("upstream_commit","short"),
+                 ("patch_commit","A"*40), ("tests_passed",1), ("tls_canary_passed",False),
+                 ("source_repo","https://example.com/traefik"), ("platform","linux/arm64"),
+                 ("image_ref",producer.IMAGE + ":latest"), ("extra","unexpected")]
+        provenance = [{"build_recipe_sha256":"short", "build_timestamp_utc":"2026-11-03T00:00:00Z"},
+                      {"build_recipe_sha256":"d"*64, "build_timestamp_utc":"2026-02-30T00:00:00Z"},
+                      {"build_recipe_sha256":"d"*64, "build_timestamp_utc":"2026-11-03"},
+                      {"build_recipe_sha256":"d"*64, "build_timestamp_utc":"2026-11-03T00:00:00+00:00"},
+                      {"build_recipe_sha256":"d"*64, "build_timestamp_utc":"2026-11-03T00:00:00Z", "extra":True}]
+        with tempfile.TemporaryDirectory() as temporary:
+            pending = Path(temporary) / "pending.json"
+            pending.write_text(json.dumps(valid_promotion(image)))
+            self.assertEqual(producer.promotion_payload(pending,image), pending.read_bytes())
+            for field, value in cases:
+                candidate = valid_promotion(image)
+                candidate[field] = value
+                pending.write_text(json.dumps(candidate))
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    producer.promotion_payload(pending,image)
+            for value in provenance:
+                candidate = valid_promotion(image)
+                candidate["provenance"] = value
+                pending.write_text(json.dumps(candidate))
+                with self.subTest(provenance=value), self.assertRaises(ValueError):
+                    producer.promotion_payload(pending,image)
+            for field in valid_promotion(image):
+                candidate = valid_promotion(image)
+                del candidate[field]
+                pending.write_text(json.dumps(candidate))
+                with self.subTest(missing=field), self.assertRaises(ValueError):
+                    producer.promotion_payload(pending,image)
 
     def test_failed_artifact_push_keeps_prior_local_promotion(self):
         with tempfile.TemporaryDirectory() as temporary:
