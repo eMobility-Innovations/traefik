@@ -1,9 +1,35 @@
-#!/bin/sh
-# Installed root-owned; callers cannot substitute the acceptance commands.
-set -eu
-PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+#!/bin/bash
+# Rendered with protected source/tool paths by the dedicated builder installer.
+set -euo pipefail
+[[ $# == 1 ]] || exit 64
+protected_source='@SOURCE_ROOT@'
+tools_root='@TOOLS_ROOT@'
+mirror_root='@MIRROR_ROOT@'
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
-[ "$#" -eq 1 ] || exit 64
-cd -- "$1"
-make validate
+candidate=$(/usr/bin/python3 - "$protected_source" "$mirror_root" "$1" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+source, mirror, candidate = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("producer", source / "overlay/reconcile.py")
+producer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(producer)
+for path in (source, source / "overlay/validate.sh", source / "overlay/build-inputs.lock", candidate):
+    producer.validate_root_path(path)
+root = producer.run("git", "rev-parse", "--show-toplevel", cwd=candidate)
+common = producer.run("git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=candidate)
+if Path(root) != candidate.resolve() or Path(common) != mirror:
+    raise ValueError("candidate must be a worktree of the controlled source mirror")
+producer.validate_mirror(mirror)
+print(candidate)
+PY
+)
+go_version=$(awk -F= '$1 == "GO_VERSION" {print $2}' "$protected_source/overlay/build-inputs.lock")
+[[ $go_version =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 65
+PATH="$tools_root/$go_version/bin:$PATH"
+export PATH
+[[ $(GOTOOLCHAIN=local "$tools_root/$go_version/bin/go" version) == "go version $go_version linux/amd64" ]] || exit 65
+"$protected_source/overlay/validate.sh" "$candidate"
+cd "$candidate"
 ./verify.sh
