@@ -16,6 +16,7 @@ PINS
 cat > "$work/bin/go" <<'GO'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ $GOMAXPROCS == 4 && $GOFLAGS == -p=4 ]]
 [[ $GOSUMDB == sum.golang.org && -z ${GONOSUMDB:-} && -z ${GOPRIVATE:-} && $GOTOOLCHAIN == local ]]
 effective=$("$REAL_GO" env GONOSUMDB GOPRIVATE)
 [[ -z $effective ]]
@@ -35,6 +36,7 @@ cat > "$work/bin/make" <<'MAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $* == validate ]]
+[[ $GOMAXPROCS == 4 && $GOFLAGS == -p=4 ]]
 [[ $GOENV == $HOSTILE_GOENV ]]
 [[ $PWD == $EXPECTED_REPO ]]
 
@@ -57,6 +59,7 @@ export AUDIT="$work/audit" TMPDIR="$work/tmp"
 export HOSTILE_GOENV="$work/hostile-go.env"
 printf 'GOSUMDB=off\nGONOSUMDB=*\nGOPRIVATE=*\n' > "$HOSTILE_GOENV"
 export GOENV="$HOSTILE_GOENV"
+export GOMAXPROCS=99 GOFLAGS=-p=99
 export GOSUMDB=off GOPRIVATE='*' GONOSUMDB='*'
 PATH="$work/bin:$PATH" bash "$work/repo/overlay/validate.sh"
 [[ $(wc -l < "$AUDIT") == 3 ]]

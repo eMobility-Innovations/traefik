@@ -2,6 +2,8 @@
 # Keep vendor validation dependencies private to this invocation.
 set -euo pipefail
 umask 077
+# Bound compiler and analyzer fan-out within this validation process.
+export GOMAXPROCS=4 GOFLAGS=-p=4
 repo=$(cd "$(dirname "$0")/.." && pwd)
 if (( $# > 1 )); then
     echo 'Usage: validate.sh [candidate-root]' >&2
