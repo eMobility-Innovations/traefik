@@ -72,15 +72,27 @@ class SecurityTests(unittest.TestCase):
         self.assertNotEqual(producer.candidate_tag("v3.7.17", {"overlay":"a"}),
                             producer.candidate_tag("v3.7.17", {"overlay":"b"}))
 
+    def test_modern_docker_manifest_id_is_not_the_config_id(self):
+        metadata = {"Id": "sha256:" + "b" * 64, "Descriptor": {
+            "digest": "sha256:" + "b" * 64,
+            "annotations": {"config.digest": "sha256:" + "c" * 64}}}
+        with patch.object(producer, "run", return_value=producer.json.dumps(metadata)):
+            self.assertEqual(producer.local_config_digest("candidate"), "sha256:" + "c" * 64)
+
+    def test_descriptor_without_config_identity_is_refused(self):
+        metadata = {"Id": "sha256:" + "b" * 64, "Descriptor": {"digest": "sha256:" + "b" * 64}}
+        with patch.object(producer, "run", return_value=producer.json.dumps(metadata)), self.assertRaises(ValueError):
+            producer.local_config_digest("candidate")
+
     def test_authoritative_push_digest_does_not_use_local_repo_digests(self):
         digest = "sha256:" + "a" * 64
-        with patch.object(producer, "run", side_effect=[digest, '{"config":{"digest":"sha256:current"}}', "sha256:current"]) as run:
+        with patch.object(producer, "run", side_effect=[digest, producer.json.dumps({'config': {'digest': 'sha256:' + 'c'*64}}), producer.json.dumps({'Id':'sha256:' + 'c'*64})]) as run:
             self.assertEqual(producer.publish("candidate"), producer.IMAGE + "@" + digest)
         self.assertFalse(any(".RepoDigests" in str(call) for call in run.call_args_list))
 
     def test_registry_manifest_must_match_candidate_config(self):
         digest = "sha256:" + "a" * 64
-        with patch.object(producer, "run", side_effect=[digest, '{"config":{"digest":"sha256:other"}}', "sha256:current"]), self.assertRaisesRegex(ValueError, "current candidate"):
+        with patch.object(producer, "run", side_effect=[digest, producer.json.dumps({'config': {'digest': 'sha256:' + 'b'*64}}), producer.json.dumps({'Id':'sha256:' + 'c'*64})]), self.assertRaisesRegex(ValueError, "current candidate"):
             producer.publish("candidate")
 
 

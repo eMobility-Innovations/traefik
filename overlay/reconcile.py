@@ -4,13 +4,17 @@
 import argparse
 import configparser
 import fcntl
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
 import stat
 import subprocess
+import tarfile
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 REPOSITORY = "https://github.com/traefik/traefik.git"
@@ -20,8 +24,10 @@ REQUIRED_OVERLAY = {"overlay/Dockerfile", "overlay/build-image.sh", "overlay/bui
                     "overlay/emit-promotion-manifest.sh", "overlay/verify_image_startup.py",
                     "overlay/promotion-manifest.schema.json", "overlay/reconcile.py",
                     "overlay/tests/test_reconcile.py", "overlay/tests/test_producer_security.py",
-                    "overlay/traefik-readiness-gate", "overlay/tests/test_promotion_manifest.sh",
+                    "overlay/traefik-readiness-gate", "overlay/verify_promotion_artifact.py",
+                    "overlay/tests/test_promotion_artifact.py", "overlay/tests/test_promotion_manifest.sh",
                     "verify.sh", "REPO-CONTRACT.toml"}
+PROMOTION_TAG = "registry.fiszu.com/emobility/traefik:promotion-linux-amd64"
 GATE_COMMAND = Path("/usr/local/libexec/traefik-readiness-gate")
 IMAGE = "registry.fiszu.com/emobility/traefik"
 VERSION = re.compile(r"refs/tags/v(\d+)\.(\d+)\.(\d+)$")
@@ -110,16 +116,93 @@ def require_unused_tag(tag):
     raise ValueError("candidate tag already exists; refusing to overwrite it")
 
 
+def local_config_digest(tag):
+    metadata = json.loads(run("docker", "image", "inspect", "--format", "{{json .}}", tag))
+    descriptor = metadata.get("Descriptor")
+    # Containerd-backed Docker uses the manifest ID as .Id; classic storage uses
+    # the config ID. Never compare the former with a registry config descriptor.
+    digest = (descriptor.get("annotations", {}).get("config.digest")
+              if descriptor is not None else metadata.get("Id"))
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise ValueError("Docker did not expose an authoritative local configuration digest")
+    return digest
+
+
 def publish(tag):
     digest = run("docker", "push", "--quiet", tag)
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
         raise ValueError("registry push did not return an authoritative digest")
     reference = IMAGE + "@" + digest
     manifest = json.loads(run("docker", "buildx", "imagetools", "inspect", "--raw", reference))
-    current = run("docker", "image", "inspect", "--format", "{{.Id}}", tag)
+    current = local_config_digest(tag)
     if manifest.get("config", {}).get("digest") != current:
         raise ValueError("pushed registry manifest does not match the current candidate")
     return reference
+
+
+def sha256(data):
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def verify_artifact_archive(path, image_id, payload):
+    with tarfile.open(path, "r:*") as archive:
+        manifest = json.load(archive.extractfile("manifest.json"))
+        if len(manifest) != 1 or len(manifest[0]["Layers"]) != 1:
+            raise ValueError("promotion artifact must have one image and one layer")
+        config = archive.extractfile(manifest[0]["Config"]).read()
+        if sha256(config) != image_id:
+            raise ValueError("promotion artifact configuration digest differs from image")
+        layer = archive.extractfile(manifest[0]["Layers"][0]).read()
+    if layer.startswith(b"\x1f\x8b"):
+        layer = gzip.decompress(layer)
+    if json.loads(config).get("rootfs", {}).get("diff_ids") != [sha256(layer)]:
+        raise ValueError("promotion artifact layer digest differs from configuration")
+    with tarfile.open(fileobj=io.BytesIO(layer), mode="r:") as archive:
+        members = archive.getmembers()
+        if len(members) != 1 or members[0].name not in ("promotion.json", "/promotion.json") or not members[0].isreg():
+            raise ValueError("promotion layer must contain only regular promotion.json")
+        if archive.extractfile(members[0]).read() != payload:
+            raise ValueError("promotion artifact payload differs from verified manifest")
+
+
+def promotion_payload(path, verified_image):
+    payload = path.read_bytes()
+    value = json.loads(payload)
+    if (not DIGEST.fullmatch(verified_image) or not verified_image.startswith(IMAGE + "@sha256:")
+            or value.get("image_ref") != verified_image
+            or value.get("source_repo") != ORG_REPOSITORY.removesuffix(".git")
+            or value.get("platform") != "linux/amd64" or value.get("schema_version") != 1
+            or value.get("tests_passed") is not True or value.get("tls_canary_passed") is not True):
+        raise ValueError("promotion payload must describe the verified candidate image")
+    return payload
+
+
+def build_promotion_artifact(pending, verified_image):
+    payload = promotion_payload(pending, verified_image)
+    tag = IMAGE + ":promotion-candidate-" + hashlib.sha256(payload).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="traefik-promotion-", dir=pending.parent) as temporary:
+        context = Path(temporary)
+        (context / "promotion.json").write_bytes(payload)
+        (context / "Dockerfile").write_text("FROM scratch\nCOPY promotion.json /promotion.json\n")
+        try:
+            run("docker", "buildx", "build", "--platform", "linux/amd64", "--load", "--provenance=false",
+                "--sbom=false", "--network=none", "--tag", tag, str(context))
+            run("docker", "image", "save", "--output", str(context / "artifact.tar"), tag)
+            verify_artifact_archive(context / "artifact.tar", local_config_digest(tag), payload)
+        except BaseException:
+            with suppress(subprocess.CalledProcessError):
+                run("docker", "image", "rm", tag)
+            raise
+    return tag
+
+
+def publish_promotion(pending, verified_image):
+    tag = build_promotion_artifact(pending, verified_image)
+    try:
+        run("docker", "tag", tag, PROMOTION_TAG)
+        return publish(PROMOTION_TAG)
+    finally:
+        run("docker", "image", "rm", tag)
 
 
 def latest_release(refs):
@@ -211,13 +294,17 @@ def reconcile(config_path, state):
                     "--image", tag, "--upstream-version", version, "--source-commit", patch_commit, cwd=checkout)
                 run("python3", "overlay/verify_image_startup.py", "--image", tag, cwd=checkout)
                 digest = publish(tag)
+                pending = Path(temporary) / "promotion-manifest.json"
                 run("bash", "overlay/emit-promotion-manifest.sh", "--image-ref", digest,
                     "--upstream-version", version, "--upstream-commit", upstream_commit,
-                    "--patch-commit", patch_commit, "--output", str(state / "promotion-manifest.json"), cwd=checkout)
+                    "--patch-commit", patch_commit, "--output", str(pending), cwd=checkout)
+                artifact_ref = publish_promotion(pending, digest)
+                os.replace(pending, state / "promotion-manifest.json")
                 temporary_marker = state / "built-inputs.json.new"
                 temporary_marker.write_text(json.dumps(fingerprint, sort_keys=True))
                 os.replace(temporary_marker, marker)
-                return {"status": "published", "version": version, "image_ref": digest}
+                return {"status": "published", "version": version, "image_ref": digest,
+                        "promotion_artifact_ref": artifact_ref}
             finally:
                 run("git", "worktree", "remove", "--force", str(checkout), cwd=source)
 
