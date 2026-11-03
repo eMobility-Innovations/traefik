@@ -131,7 +131,7 @@ def local_config_digest(tag):
 
 
 def publish(tag):
-    digest = run("docker", "push", "--quiet", tag)
+    digest = run("docker", "push", "--platform", "linux/amd64", "--quiet", tag)
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
         raise ValueError("registry push did not return an authoritative digest")
     reference = IMAGE + "@" + digest

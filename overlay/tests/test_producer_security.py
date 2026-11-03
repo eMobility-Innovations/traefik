@@ -96,6 +96,25 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(producer.publish("candidate"), producer.IMAGE + "@" + digest)
         self.assertFalse(any(".RepoDigests" in str(call) for call in run.call_args_list))
 
+    def test_push_selects_only_the_tested_linux_amd64_manifest(self):
+        digest = "sha256:" + "a"*64
+        config = "sha256:" + "c"*64
+        with patch.object(producer, "run", side_effect=[digest,producer.json.dumps({"config":{"digest":config}}),producer.json.dumps({"Id":config})]) as run:
+            producer.publish("candidate")
+        run.assert_any_call("docker", "push", "--platform", "linux/amd64", "--quiet", "candidate")
+
+    def test_unexpected_index_response_is_refused(self):
+        digest = "sha256:" + "a"*64
+        index = {"mediaType":"application/vnd.oci.image.index.v1+json", "manifests":[]}
+        with patch.object(producer, "run", side_effect=[digest,producer.json.dumps(index),producer.json.dumps({"Id":"sha256:"+"c"*64})]), self.assertRaisesRegex(ValueError,"current candidate"):
+            producer.publish("candidate")
+
+    def test_unavailable_tested_platform_cannot_advance_publication(self):
+        error = producer.subprocess.CalledProcessError(1,["docker","push"],stderr="linux/amd64 platform unavailable")
+        with patch.object(producer, "run", side_effect=error) as run, self.assertRaises(producer.subprocess.CalledProcessError):
+            producer.publish("candidate")
+        self.assertEqual(run.call_count,1)
+
     def test_registry_manifest_must_match_candidate_config(self):
         digest = "sha256:" + "a" * 64
         with patch.object(producer, "run", side_effect=[digest, producer.json.dumps({'config': {'digest': 'sha256:' + 'b'*64}}), producer.json.dumps({'Id':'sha256:' + 'c'*64})]), self.assertRaisesRegex(ValueError, "current candidate"):
