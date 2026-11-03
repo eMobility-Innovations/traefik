@@ -2,7 +2,7 @@
 
 `Dockerfile` produces a Linux/amd64 image from this checked-out Traefik source and immutable
 builder/runtime/WebUI inputs. The pinned Node stage regenerates the complete embedded dashboard from the upstream source and lockfile. The builder must contain the Go patch level in `build-inputs.lock` and be
-passed by immutable digest. It replaces only `/traefik`, retaining the upstream runtime
+passed by immutable digest. It replaces only `/usr/local/bin/traefik`, the executable selected by the pinned official-library image's `/entrypoint.sh` and `traefik` command, retaining the upstream runtime
 image's entrypoint and filesystem layout. `build-image.sh` is intentionally build-only: the
 organization build identity publishes a candidate by digest, then uses
 `emit-promotion-manifest.sh` to emit a separate `promotion-manifest.json` conforming to

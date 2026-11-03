@@ -31,4 +31,4 @@ ARG UPSTREAM_VERSION
 LABEL org.opencontainers.image.source="https://github.com/eMobility-Innovations/traefik" \
       org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.opencontainers.image.version="${UPSTREAM_VERSION}"
-COPY --from=build /out/traefik /traefik
+COPY --from=build /out/traefik /usr/local/bin/traefik
