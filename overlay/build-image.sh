@@ -8,7 +8,7 @@ usage() {
   exit 64
 }
 
-build_image= runtime_image= webui_image= image= upstream_version= source_commit=
+build_image='' runtime_image='' webui_image='' image='' upstream_version='' source_commit=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --build-image) build_image=${2-}; shift 2 ;;
