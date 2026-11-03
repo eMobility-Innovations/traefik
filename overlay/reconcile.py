@@ -100,7 +100,12 @@ def _redact_gate_output(value):
     value = value or ""
     value = re.sub(r"(?im)^([^\n:=]*(?:password|token|authorization|auth)[^\n:=]*)\s*[:=].*$", r"\1=<redacted>", value)
     value = re.sub(r"(?i)(https?://)[^/\s:@]+:[^@\s/]+@", r"\1<redacted>@", value)
-    return value[:4096]
+    if len(value) <= 4096:
+        return value
+    marker = "\n[... truncated ...]\n"
+    remaining = 4096 - len(marker)
+    head = remaining // 2
+    return value[:head] + marker + value[-(remaining - head):]
 
 
 def run_gate(checkout, state=None, source_commit=None):
