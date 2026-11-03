@@ -69,8 +69,14 @@ class SecurityTests(unittest.TestCase):
                                             "runtime_image":"trusted", "webui_image":"trusted"})
 
     def test_tag_binds_entire_input_fingerprint(self):
-        self.assertNotEqual(producer.candidate_tag("v3.7.17", {"overlay":"a"}),
-                            producer.candidate_tag("v3.7.17", {"overlay":"b"}))
+        with patch.object(producer, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex="f"*32)), create=True):
+            self.assertNotEqual(producer.candidate_tag("v3.7.17", {"overlay":"a"}),
+                                producer.candidate_tag("v3.7.17", {"overlay":"b"}))
+
+    def test_same_fingerprint_retry_uses_a_fresh_immutable_tag(self):
+        first = producer.candidate_tag("v3.7.17", {"overlay":"same"})
+        second = producer.candidate_tag("v3.7.17", {"overlay":"same"})
+        self.assertNotEqual(first, second)
 
     def test_modern_docker_manifest_id_is_not_the_config_id(self):
         metadata = {"Id": "sha256:" + "b" * 64, "Descriptor": {

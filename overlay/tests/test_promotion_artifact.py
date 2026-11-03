@@ -14,7 +14,7 @@ producer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(producer)
 
 
-def archive(path, names, payload=b'{"test":"fixture"}'):
+def archive(path, names, payload=b'{"test":"fixture"}', wrong_diff_id=False, architecture="amd64"):
     layer = io.BytesIO()
     with tarfile.open(fileobj=layer, mode="w") as tar:
         for name, kind in names:
@@ -23,7 +23,7 @@ def archive(path, names, payload=b'{"test":"fixture"}'):
             info.size = len(payload) if kind == tarfile.REGTYPE else 0
             tar.addfile(info, io.BytesIO(payload) if info.size else None)
     layer_bytes = layer.getvalue()
-    config = json.dumps({"rootfs":{"type":"layers", "diff_ids":["sha256:" + hashlib.sha256(layer_bytes).hexdigest()]}}).encode()
+    config = json.dumps({"architecture":architecture, "os":"linux", "rootfs":{"type":"layers", "diff_ids":["sha256:" + ("0"*64 if wrong_diff_id else hashlib.sha256(layer_bytes).hexdigest())]}}).encode()
     identity = hashlib.sha256(config).hexdigest()
     manifest = json.dumps([{"Config":identity + ".json", "Layers":["layer.tar"]}]).encode()
     with tarfile.open(path, "w") as tar:
@@ -40,6 +40,13 @@ class PromotionArtifactTests(unittest.TestCase):
             path = Path(temporary) / "image.tar"
             identity = archive(path, [("promotion.json", tarfile.REGTYPE)])
             producer.verify_artifact_archive(path, identity, b'{"test":"fixture"}')
+
+    def test_wrong_platform_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "image.tar"
+            identity = archive(path, [("promotion.json", tarfile.REGTYPE)], architecture="arm64")
+            with self.assertRaisesRegex(ValueError, "linux/amd64"):
+                producer.verify_artifact_archive(path, identity, b'{"test":"fixture"}')
 
     def test_noncanonical_layers_are_refused(self):
         cases = [[("other.json", tarfile.REGTYPE)], [("../promotion.json",tarfile.REGTYPE)],
@@ -85,7 +92,7 @@ class PromotionArtifactTests(unittest.TestCase):
                     self.assertEqual((Path(args[-1]) / "Dockerfile").read_text(),
                                      "FROM scratch\nCOPY promotion.json /promotion.json\n")
                 if args[:3] == ("docker", "image", "save"):
-                    identity = archive(Path(args[4]), [("promotion.json", tarfile.REGTYPE)], pending.read_bytes())
+                    identity = archive(Path(args[args.index("--output") + 1]), [("promotion.json", tarfile.REGTYPE)], pending.read_bytes())
                 if args[:3] == ("docker", "image", "inspect"):
                     return json.dumps({"Id": identity})
                 return ""
@@ -120,6 +127,88 @@ class PromotionArtifactTests(unittest.TestCase):
                 producer.reconcile(state / "config.json", state)
             self.assertEqual(final.read_text(), "last-good")
             self.assertEqual(marker.read_text(), '{"last_good":true}')
+
+    def test_published_artifact_is_pulled_by_digest_and_fully_checked(self):
+        image = producer.IMAGE + "@sha256:" + "a" * 64
+        reference = producer.IMAGE + "@sha256:" + "b" * 64
+        value = {"image_ref":image, "source_repo":producer.ORG_REPOSITORY.removesuffix(".git"),
+                 "platform":"linux/amd64", "schema_version":1, "tests_passed":True,
+                 "tls_canary_passed":True}
+        for corrupted in (False, "payload", "diff_id"):
+            with self.subTest(corrupted=corrupted), tempfile.TemporaryDirectory() as temporary:
+                pending = Path(temporary) / "pending.json"
+                pending.write_text(json.dumps(value))
+                identity = None
+
+                def execute(*args, _corrupted=corrupted, _pending=pending, **_kwargs):
+                    nonlocal identity
+                    if args[:3] == ("docker", "image", "save"):
+                        payload = b"wrong remote layer" if _corrupted == "payload" else _pending.read_bytes()
+                        identity = archive(Path(args[args.index("--output") + 1]),
+                                           [("promotion.json",tarfile.REGTYPE)], payload,
+                                           wrong_diff_id=_corrupted == "diff_id")
+                    if args[:3] == ("docker", "image", "inspect"):
+                        return json.dumps({"Id":identity})
+                    return ""
+
+                with patch.object(producer, "run", side_effect=execute) as run:
+                    if corrupted:
+                        with self.assertRaises(ValueError):
+                            producer.verify_published_promotion(reference, pending, image)
+                    else:
+                        producer.verify_published_promotion(reference, pending, image)
+                run.assert_any_call("docker", "pull", "--platform", "linux/amd64", reference)
+                self.assertFalse(any(call.args[:2] == ("docker", "run") for call in run.call_args_list))
+
+    def test_publisher_requires_remote_readback_before_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pending = Path(temporary) / "pending.json"
+            pending.write_text("candidate")
+            with patch.object(producer, "build_promotion_artifact", return_value="candidate"), patch.object(producer, "run"), patch.object(producer, "publish", return_value="immutable-ref"), patch.object(producer, "verify_published_promotion", side_effect=ValueError("remote layer differs")), self.assertRaisesRegex(ValueError,"remote layer differs"):
+                producer.publish_promotion(pending, "verified-image")
+
+    def test_native_tick_retry_after_remote_failure_preserves_and_then_advances_state(self):
+        image = producer.IMAGE + "@sha256:" + "a" * 64
+        artifact = producer.IMAGE + "@sha256:" + "b" * 64
+        config = {"source_checkout":"/source", "overlay_commit":"d"*40, "patch_commits":["a"*40],
+                  "build_image":"build", "runtime_image":"runtime", "webui_image":"webui"}
+        published_tags = set()
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            final, marker = state / "promotion-manifest.json", state / "built-inputs.json"
+            final.write_text("last-good")
+            marker.write_text('{"last_good":true}')
+
+            def execute(*args, **_kwargs):
+                if args[:2] == ("git", "ls-remote"):
+                    return "b"*40 + " refs/tags/v3.7.17"
+                if args[:2] == ("git", "rev-parse"):
+                    return "c"*40
+                if args[:2] == ("bash", "overlay/emit-promotion-manifest.sh"):
+                    Path(args[args.index("--output")+1]).write_text("candidate")
+                return ""
+
+            def unused(tag):
+                if tag in published_tags:
+                    raise ValueError("existing immutable candidate cannot be overwritten")
+
+            def publish(tag):
+                if tag == producer.PROMOTION_TAG:
+                    return artifact
+                published_tags.add(tag)
+                return image
+
+            with patch.object(producer, "validate_root_path"), patch.object(producer, "inputs", return_value=config), patch.object(producer, "reviewed_source", return_value=Path("/source")), patch.object(producer, "fetch_release", return_value="b"*40), patch.object(producer, "install_overlay"), patch.object(producer, "run_gate") as gate, patch.object(producer, "require_unused_tag", side_effect=unused), patch.object(producer, "publish", side_effect=publish), patch.object(producer, "build_promotion_artifact", return_value="artifact-candidate"), patch.object(producer, "verify_published_promotion", side_effect=[ValueError("wrong remote layer"), None]), patch.object(producer, "run", side_effect=execute):
+                with self.assertRaisesRegex(ValueError, "wrong remote layer"):
+                    producer.reconcile(state / "config.json", state)
+                self.assertEqual(final.read_text(), "last-good")
+                self.assertEqual(marker.read_text(), '{"last_good":true}')
+                result = producer.reconcile(state / "config.json", state)
+            self.assertEqual(len(published_tags), 2)
+            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(result["promotion_artifact_ref"], artifact)
+            self.assertEqual(final.read_text(), "candidate")
+            self.assertNotEqual(marker.read_text(), '{"last_good":true}')
 
     def test_failed_artifact_push_keeps_prior_local_promotion(self):
         with tempfile.TemporaryDirectory() as temporary:
