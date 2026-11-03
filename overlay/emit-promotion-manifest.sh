@@ -8,7 +8,7 @@ usage() {
   exit 64
 }
 
-image_ref= upstream_version= upstream_commit= patch_commit= output=
+image_ref='' upstream_version='' upstream_commit='' patch_commit='' output=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --image-ref) image_ref=${2-}; shift 2 ;;
