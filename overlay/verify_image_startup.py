@@ -27,13 +27,17 @@ def command(*args):
 def make_certificates(root):
     command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
             "-keyout", str(root / "ca.key"), "-out", str(root / "ca.pem"),
-            "-days", "1", "-subj", "/CN=Traefik startup fixture CA")
+            "-days", "1", "-subj", "/CN=Traefik startup fixture CA",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+            "-addext", "subjectKeyIdentifier=hash")
     command("openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
             "-keyout", str(root / "leaf.key"), "-out", str(root / "leaf.csr"),
             "-subj", "/CN=startup.test")
     (root / "leaf.ext").write_text(
         "subjectAltName=DNS:startup.test\nbasicConstraints=critical,CA:FALSE\n"
-        "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
+        "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n")
     command("openssl", "x509", "-req", "-in", str(root / "leaf.csr"),
             "-CA", str(root / "ca.pem"), "-CAkey", str(root / "ca.key"),
             "-CAcreateserial", "-out", str(root / "leaf.pem"), "-days", "1",
@@ -75,7 +79,7 @@ def handshake(port, ca_file, deadline):
             return {"verified": True, "protocol": tls.version()}
     except ssl.SSLCertVerificationError as error:
         return {"verified": False, "error_class": type(error).__name__,
-                "verification_code": error.verify_code}
+                "verification_code": error.verify_code, "verification_message": error.verify_message}
     except ssl.SSLError as error:
         return {"verified": False, "error_class": type(error).__name__}
 
