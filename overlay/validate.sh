@@ -33,9 +33,9 @@ lint_bin="$validation_dir/golangci-lint-$lint_version/bin"
 spell_bin="$validation_dir/misspell-$spell_version/bin"
 mkdir -p "$lint_bin" "$spell_bin"
 # Module checksums remain mandatory even when a caller has private-module settings.
-GOBIN="$lint_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
+GOBIN="$lint_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB='' GOPRIVATE='' GOTOOLCHAIN=local \
     go install -p 4 "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$lint_version"
-GOBIN="$spell_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB= GOPRIVATE= GOTOOLCHAIN=local \
+GOBIN="$spell_bin" GOENV=off GOSUMDB=sum.golang.org GONOSUMDB='' GOPRIVATE='' GOTOOLCHAIN=local \
     go install -p 4 "github.com/golangci/misspell/cmd/misspell@$spell_version"
 cd "$candidate"
 PATH="$lint_bin:$spell_bin:$PATH" make validate
