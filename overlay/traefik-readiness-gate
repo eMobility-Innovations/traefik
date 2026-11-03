@@ -1,0 +1,9 @@
+#!/bin/sh
+# Installed root-owned; callers cannot substitute the acceptance commands.
+set -eu
+PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+[ "$#" -eq 1 ] || exit 64
+cd -- "$1"
+make validate
+./verify.sh
