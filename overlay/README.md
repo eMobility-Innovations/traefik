@@ -13,6 +13,8 @@ Fleet control is the sole promotion and compose owner. It accepts that manifest 
 the focused server gate and the real TLS first-handshake canary succeeded. Until then, it retains
 the stock `docker.io/traefik:v3.7` policy. No mutable production tag, placeholder digest, credential, or timer belongs in this overlay.
 
+HTTP/3 server-side qlog (`pkg/server/qlog_tracer.go`) is off unless `H3_QLOG_DIR`, `H3_QLOG_MAX_DIR_BYTES` and `H3_QLOG_MIN_FREE_BYTES` are all set; there are no built-in defaults. It writes `<odcid>_server.sqlog` from one background worker that cannot stall a connection, and stops, logging once, at the size cap or free-space floor. Tracing then stays off until restart unless the optional `H3_QLOG_PRUNE_AGE` duration is set, which removes only finished traces older than that age when a limit trips. Header values other than `:method` and `:status` are redacted.
+
 `reconcile.py` is the producer entry point for the existing fleet control-plane tick. It
 uses a nonblocking lock, binds the official HTTPS tag advertisement to the fetched tag object and its peeled commit, and compares the newest complete stable upstream tag plus configured
 build inputs, creates a private detached worktree, and verifies the checkout has the canonical organization origin and that every patch and the explicit overlay commit belongs to fetched organization `main`. It applies the reviewed Go patch commit
