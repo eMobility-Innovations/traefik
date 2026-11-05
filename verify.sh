@@ -11,6 +11,7 @@ python3 overlay/tests/check_python_coverage.py
 bash overlay/tests/test_promotion_manifest.sh
 bash overlay/tests/test_shell_detection.sh
 go test ./pkg/server -run 'Test(ServerStartup|ServerFirstHandshake|InitialConfiguration)' -count=1
+go test ./pkg/server -run '^TestQlog' -race -count=1
 go test ./pkg/tls -run '^TestUpdateConfigs' -count=1
 go test ./cmd/traefik -run '^TestInitialRequiredProviders$' -count=1
 go test ./pkg/provider/acme -run '^TestInitialStoredSnapshotPrecedesRenewal$' -count=1
