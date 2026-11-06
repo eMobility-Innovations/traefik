@@ -44,7 +44,10 @@ var qlogTraceName = regexp.MustCompile(`^[0-9a-f]+_server\.sqlog$`)
 // qlogConnectionTracer returns the process-wide tracer shared by every HTTP/3 entry point, so
 // the size cap covers all of them. It returns nil, leaving QUIC untouched, unless configured.
 var qlogConnectionTracer = sync.OnceValue(func() qlogTracerFunc {
-	return newQlogTracer(os.Getenv)
+	// The worker lives for the whole process, so the stop returned alongside the tracer is dropped here.
+	tracer, _ := newQlogTracer(os.Getenv)
+
+	return tracer
 })
 
 type qlogTracerFunc = func(ctx context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace
@@ -62,20 +65,22 @@ type qlogIO struct {
 	freeBytes func(dir string) (int64, error)
 }
 
-func newQlogTracer(getenv func(string) string) qlogTracerFunc {
+// newQlogTracer returns the tracer and a close that stops its disk worker, or a
+// nil tracer when qlog is not fully configured.
+func newQlogTracer(getenv func(string) string) (qlogTracerFunc, func()) {
 	cfg, err := parseQlogConfig(getenv)
 	if err != nil {
 		log.Warn().Err(err).Msg("HTTP/3 qlog tracing stays off")
-		return nil
+		return nil, func() {}
 	}
 	if cfg.dir == "" {
-		return nil
+		return nil, func() {}
 	}
 
 	notify := func(msg string) { log.Warn().Str("dir", cfg.dir).Msg(msg) }
 	writer := newQlogWriter(cfg, qlogIO{open: openQlogFile, freeBytes: qlogFreeBytes}, notify)
 
-	return httpqlog.RedactHeaders(writer.trace, redactQlogHeader)
+	return httpqlog.RedactHeaders(writer.trace, redactQlogHeader), writer.close
 }
 
 func parseQlogConfig(getenv func(string) string) (qlogConfig, error) {
@@ -154,6 +159,9 @@ type qlogWriter struct {
 	notify  func(string)
 	stopped atomic.Bool
 	wake    chan struct{}
+	// stop tells the worker to exit after draining the queue; done closes when it has.
+	stop chan struct{}
+	done chan struct{}
 
 	mu           sync.Mutex
 	pending      []qlogOp
@@ -175,6 +183,8 @@ func newQlogWriter(cfg qlogConfig, disk qlogIO, notify func(string)) *qlogWriter
 		notify: notify,
 		wake:   make(chan struct{}, 1),
 		live:   make(map[string]struct{}),
+		stop:   make(chan struct{}, 1),
+		done:   make(chan struct{}),
 	}
 	go w.run()
 
@@ -220,16 +230,32 @@ func (w *qlogWriter) enqueue(op qlogOp) bool {
 
 func (w *qlogWriter) run() {
 	defer w.recoverWorker()
+	defer close(w.done)
 
 	w.start()
 	for {
 		select {
 		case <-w.wake:
 			w.drain()
+		case <-w.stop:
+			// A last drain keeps every accepted op from outliving the worker.
+			w.drain()
+			return
 		case <-w.retryTimer():
 			w.prune()
 		}
 	}
+}
+
+// close waits for the worker to finish queued disk work and exit, so a directory can be
+// removed without racing a late write. Production never calls it: the worker is a
+// process-lifetime resource.
+func (w *qlogWriter) close() {
+	select {
+	case <-w.done:
+	case w.stop <- struct{}{}:
+	}
+	<-w.done
 }
 
 func (w *qlogWriter) retryTimer() <-chan time.Time {
