@@ -10,5 +10,6 @@ func qlogFreeBytes(dir string) (int64, error) {
 		return 0, err
 	}
 
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
+	// Bsize is int64 on 64-bit linux but int32 on 32-bit linux and uint32 on darwin.
+	return int64(stat.Bavail) * int64(stat.Bsize), nil //nolint:unconvert // width differs per GOOS/GOARCH
 }
