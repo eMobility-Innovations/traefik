@@ -87,8 +87,11 @@ func newQlogTestWriter(t *testing.T, cfg qlogConfig, disk qlogIO) (*qlogWriter, 
 	}
 
 	notes := &qlogNotes{}
+	w := newQlogWriter(cfg, disk, notes.add)
+	// The worker outlives the test body and would otherwise race this test's TempDir cleanup.
+	t.Cleanup(func() { w.close() })
 
-	return newQlogWriter(cfg, disk, notes.add), notes
+	return w, notes
 }
 
 func qlogConnID(n int) quic.ConnectionID {
@@ -163,12 +166,16 @@ func TestQlogOffUnlessFullyConfigured(t *testing.T) {
 	}
 	for name, env := range testCases {
 		t.Run(name, func(t *testing.T) {
-			assert.Nil(t, newQlogTracer(qlogEnv(env)))
+			tracer, _ := newQlogTracer(qlogEnv(env))
+			assert.Nil(t, tracer)
 			assert.NoDirExists(t, dir)
 		})
 	}
 
-	assert.NotNil(t, newQlogTracer(qlogEnv(valid)))
+	// The only fully valid case spawns the live worker; stop it before TempDir cleanup runs.
+	tracer, stop := newQlogTracer(qlogEnv(valid))
+	t.Cleanup(stop)
+	assert.NotNil(t, tracer)
 }
 
 func TestQlogSettingNamesAreNotTraefikStaticConfig(t *testing.T) {
@@ -511,11 +518,14 @@ func TestQlogHeaderValuesAreRedacted(t *testing.T) {
 
 func TestQlogRealConnectionWritesARedactedTrace(t *testing.T) {
 	dir := t.TempDir()
-	tracer := newQlogTracer(qlogEnv(map[string]string{
+	// Registered before the server below, so LIFO cleanup stops the worker only after the
+	// connection is closed and its final events are enqueued.
+	tracer, stop := newQlogTracer(qlogEnv(map[string]string{
 		qlogDirEnv:          dir,
 		qlogMaxDirBytesEnv:  strconv.Itoa(1 << 30),
 		qlogMinFreeBytesEnv: "1",
 	}))
+	t.Cleanup(stop)
 	require.NotNil(t, tracer)
 
 	certContent, err := localhostCert.Read()
