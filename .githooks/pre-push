@@ -137,6 +137,20 @@ export PUSH_REFS
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 cd "$REPO_ROOT" || exit 1
 
+# Scan only the commits this push proposes; keep scanner failure distinct.
+_GITLEAKS="$(_policy_bin gitleaks-staged-guard.py)"
+if [ -f "$_GITLEAKS" ]; then
+  python3 "$_GITLEAKS" push --repo "$REPO_ROOT" --refs "$PUSH_REFS" --remote "${1:-origin}" </dev/null
+  _GITLEAKS_RC=$?
+  [ "$_GITLEAKS_RC" -eq 0 ] || exit "$_GITLEAKS_RC"
+else
+  # Inert where the rail is not installed, like the rest of this hook: say SKIPPED,
+  # not COULD_NOT_RUN, because this push is NOT refused and the label must not imply it.
+  printf 'GITLEAKS_SKIPPED: guard not installed at %s; this push was not scanned\n' "$_GITLEAKS" >&2
+fi
+
+
+
 # Direct trunk pushes are train-only unless every new committer is declared.
 _td_push_guard() {
   local remote="${1:-origin}" head trunk _lref lsha rref rsha commits sha email exempt
