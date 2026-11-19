@@ -17,7 +17,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	httpqlog "github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlog"
+	_ "github.com/quic-go/quic-go/qlog" // registers the transport event schema the trace header declares
 	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/qlogwriter/jsontext"
 	"github.com/rs/zerolog/log"
@@ -202,7 +202,7 @@ func (w *qlogWriter) trace(_ context.Context, isClient bool, connID quic.Connect
 
 	sink := &qlogSink{writer: w, trace: t}
 	buffered := &qlogBufferedSink{Writer: bufio.NewWriter(sink), sink: sink}
-	seq := qlogwriter.NewConnectionFileSeq(buffered, false, connID, []string{qlog.EventSchema, httpqlog.EventSchema})
+	seq := qlogwriter.NewConnectionFileSeq(buffered, false, connID) // schemas: registered by the qlog and http3/qlog package inits (quic-go v0.65)
 	go seq.Run()
 
 	return qlogSafeTrace{Trace: seq}
