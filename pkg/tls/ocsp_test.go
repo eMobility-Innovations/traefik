@@ -475,7 +475,7 @@ func TestOCSPStapler_updateStaples(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Equal(t, ocspResponse, toUpdate.(*ocspEntry).staple)
-	assert.Equal(t, stapleUpdate.UTC(), nilStaple.(*ocspEntry).nextUpdate)
+	assert.Equal(t, stapleUpdate.UTC(), toUpdate.(*ocspEntry).nextUpdate)
 
 	noUpdate, ok := ocspStapler.cache.Get("noUpdate")
 	require.True(t, ok)
