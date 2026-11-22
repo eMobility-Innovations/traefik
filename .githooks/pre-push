@@ -146,6 +146,17 @@ if [ -f "$_GITLEAKS" ]; then
 else
   # Inert where the rail is not installed, like the rest of this hook: say SKIPPED,
   # not COULD_NOT_RUN, because this push is NOT refused and the label must not imply it.
+  # STALE alone refuses: armed, runtime present, guard missing; mode: runtime file, origin/main, ~/Projects checkout.
+  _GITLEAKS_RUNTIME="${CLAUDE_POLICY_RUNTIME:-$HOME_DIR/.claude/policy-runtime}"
+  _gitleaks_mode() { sed -nE 's/.*"mode"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1; }
+  _GITLEAKS_MODE=""
+  _GITLEAKS_MODE="$(_gitleaks_mode 2>/dev/null < "$_GITLEAKS_RUNTIME/policy/gitleaks-policy.json")"
+  [ -n "$_GITLEAKS_MODE" ] || _GITLEAKS_MODE="$(git -C "$_GITLEAKS_RUNTIME" show refs/remotes/origin/main:policy/gitleaks-policy.json 2>/dev/null | _gitleaks_mode)"
+  [ -n "$_GITLEAKS_MODE" ] || _GITLEAKS_MODE="$(_gitleaks_mode 2>/dev/null < "$HOME_DIR/Projects/claude-code-policy/policy/gitleaks-policy.json")"
+  if [ -d "$_GITLEAKS_RUNTIME" ] && [ "$_GITLEAKS_MODE" = "armed" ]; then
+    printf 'GITLEAKS_RUNTIME_STALE: policy runtime at %s lacks the gitleaks guard while gitleaks is armed; push refused. Remedy: run ccp-setup (converge the policy runtime) and push again.\n' "$_GITLEAKS_RUNTIME" >&2
+    exit 1
+  fi
   printf 'GITLEAKS_SKIPPED: guard not installed at %s; this push was not scanned\n' "$_GITLEAKS" >&2
 fi
 
